@@ -32,6 +32,8 @@ def _pick(row: dict[str, Any], name: str, default: Any = "") -> Any:
 def map_product(row: dict[str, Any], default_version: str = "", default_schema: int = 1) -> Product:
     raw_status = str(_pick(row, "status", "Published")).strip()
     status = "Published" if raw_status.upper() in {"Y", "PUBLISHED", "ACTIVE"} else raw_status
+    country_code = str(_pick(row, "country_code")).strip().upper()
+    country_name = str(_pick(row, "country_name")).strip() or country_code
     try:
         schema_version = int(_pick(row, "schema_version", default_schema) or default_schema)
     except (TypeError, ValueError):
@@ -40,8 +42,8 @@ def map_product(row: dict[str, Any], default_version: str = "", default_schema: 
         fnsku=str(_pick(row, "fnsku")).strip(),
         item_code=str(_pick(row, "item_code")).strip(),
         sku=str(_pick(row, "sku")).strip(),
-        country_code=str(_pick(row, "country_code")).strip().upper(),
-        country_name=str(_pick(row, "country_name")).strip(),
+        country_code=country_code,
+        country_name=country_name,
         product_name=str(_pick(row, "product_name")).strip(),
         product_name_en=str(_pick(row, "product_name_en")).strip(),
         amazon_account=str(_pick(row, "amazon_account")).strip(),
