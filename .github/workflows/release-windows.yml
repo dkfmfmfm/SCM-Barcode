@@ -28,7 +28,7 @@ permissions:
 
 concurrency:
   group: beyondpack-windows-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-and-release:
@@ -71,8 +71,15 @@ jobs:
           $process = Start-Process `
             -FilePath ".\dist\onefile\BeyondPack.exe" `
             -ArgumentList "--self-test" `
-            -Wait `
             -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            $logPath = Join-Path $env:LOCALAPPDATA "BeyondPack\logs\startup.log"
+            if (Test-Path -LiteralPath $logPath) {
+              Get-Content -LiteralPath $logPath | Write-Host
+            }
+            throw "Executable GUI startup self-test timed out after 30 seconds."
+          }
           if ($process.ExitCode -ne 0) {
             $logPath = Join-Path $env:LOCALAPPDATA "BeyondPack\logs\startup.log"
             if (Test-Path -LiteralPath $logPath) {
