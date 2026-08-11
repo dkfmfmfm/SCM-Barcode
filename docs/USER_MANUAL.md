@@ -173,20 +173,20 @@ Excel에는 포장 작업, 박스 그룹, 구성품, 작업 당시의 상품정�
 `BeyondPack_Master` 탭 첫 행에 다음 내부 열 이름을 사용한다.
 
 ```text
-FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
+FNSKU,ItemCode,SKU,CountryCode,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
 ```
 
-필수값은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `CountryName`, `ProductName`이다. `SchemaVersion`은 현재 `2`를 사용한다. 활성 상품의 `Status`는 `Published`, `Active`, `Y` 중 하나를 사용한다.
+필수값은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `ProductName`이다. 화면의 국가는 `CountryCode`를 사용한다. 기존 파일의 `CountryName` 열은 있어도 읽지만 신규 Google Sheet에는 만들지 않는다. `SchemaVersion`은 현재 `2`를 사용한다. 활성 상품의 `Status`는 `Published`, `Active`, `Y` 중 하나를 사용한다.
 
 ### 9.2 국가별 FNSKU 등록
 
 FNSKU가 같아도 국가가 다르면 국가별로 한 행씩 등록한다.
 
 ```text
-FNSKU       CountryCode  CountryName
-X001ABC123  US           미국
-X001ABC123  CA           캐나다
-X001ABC123  JP           일본
+FNSKU       CountryCode
+X001ABC123  US
+X001ABC123  CA
+X001ABC123  JP
 ```
 
 동일한 `FNSKU+CountryCode` 조합은 중복 등록할 수 없다. 프로그램은 이 조합을 내부 조회키로 사용한다.
