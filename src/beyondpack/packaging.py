@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterator
 
 from .errors import PackagingValidationError
 from .models import BoxGroupInput, BoxItem, utc_now_iso
@@ -24,12 +26,17 @@ class PackagingRepository:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=10)
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -253,4 +260,3 @@ class PackagingRepository:
                 json.dumps(details or {}, ensure_ascii=False, default=str),
             ),
         )
-

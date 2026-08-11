@@ -8,9 +8,14 @@ import beyondpack_entry
 
 
 class BootstrapTests(unittest.TestCase):
+    @staticmethod
+    def _app_data_environment(temp_dir: str) -> dict[str, str]:
+        key = "LOCALAPPDATA" if os.name == "nt" else "XDG_DATA_HOME"
+        return {key: temp_dir}
+
     def test_startup_log_is_written_to_application_data(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            with patch.dict(os.environ, {"XDG_DATA_HOME": temp_dir}):
+            with patch.dict(os.environ, self._app_data_environment(temp_dir)):
                 path = beyondpack_entry._write_startup_log("TEST START")
             self.assertEqual(
                 path,
@@ -24,7 +29,7 @@ class BootstrapTests(unittest.TestCase):
             log_dir.mkdir(parents=True)
             current = log_dir / "startup.log"
             current.write_bytes(b"x" * 1_000_001)
-            with patch.dict(os.environ, {"XDG_DATA_HOME": temp_dir}):
+            with patch.dict(os.environ, self._app_data_environment(temp_dir)):
                 path = beyondpack_entry._write_startup_log("AFTER ROTATION")
             self.assertLess(path.stat().st_size, 1_000_000)
             self.assertTrue((log_dir / "startup.previous.log").exists())

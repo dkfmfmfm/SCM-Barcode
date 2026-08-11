@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -65,6 +66,29 @@ class CacheTests(unittest.TestCase):
             self.cache._replace_with_retry(source, target)
         self.assertEqual(replace.call_count, 2)
 
+    def test_read_connections_are_closed_before_snapshot_replacement(self):
+        self.cache.replace_snapshot(ProductBatch((product("X1"),), "V1", 2))
+        real_connect = sqlite3.connect
+        opened = []
+
+        def tracked_connect(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            opened.append(connection)
+            return connection
+
+        with patch("beyondpack.cache.sqlite3.connect", side_effect=tracked_connect):
+            self.cache.info()
+            self.cache.available_countries()
+            self.cache.lookup("X1", "US")
+
+        self.assertEqual(len(opened), 3)
+        for connection in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
+        self.cache.replace_snapshot(ProductBatch((product("X2", version="V2"),), "V2", 2))
+        self.assertEqual(self.cache.lookup("X2", "US").data_version, "V2")
+
     def test_duplicate_composite_key_rejects_entire_snapshot(self):
         batch = ProductBatch((product("X1"), product(" x1 ")), "V1", 2)
         with self.assertRaises(DuplicateProductKeyError):
@@ -92,35 +116,43 @@ class CacheTests(unittest.TestCase):
 
     def test_schema1_cache_remains_readable_during_offline_upgrade(self):
         self.cache.data_dir.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.cache.db_path) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE products (
-                    fnsku TEXT NOT NULL,
-                    normalized_fnsku TEXT NOT NULL UNIQUE,
-                    item_code TEXT NOT NULL,
-                    sku TEXT NOT NULL,
-                    country_code TEXT NOT NULL,
-                    country_name TEXT NOT NULL,
-                    product_name TEXT NOT NULL,
-                    product_name_en TEXT NOT NULL DEFAULT '',
-                    amazon_account TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL,
-                    source_modified_at TEXT NOT NULL DEFAULT '',
-                    data_version TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL
-                );
-                """
-            )
-            conn.execute(
-                "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ("X1", "X1", "A1", "SKU1", "US", "미국", "상품1", "", "", "Published", "", "V1", 1),
-            )
-            conn.executemany(
-                "INSERT INTO metadata VALUES (?, ?)",
-                (("data_version", "V1"), ("schema_version", "1"), ("synced_at", "2026-08-11T00:00:00+00:00")),
-            )
+        with closing(sqlite3.connect(self.cache.db_path)) as conn:
+            with conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    CREATE TABLE products (
+                        fnsku TEXT NOT NULL,
+                        normalized_fnsku TEXT NOT NULL UNIQUE,
+                        item_code TEXT NOT NULL,
+                        sku TEXT NOT NULL,
+                        country_code TEXT NOT NULL,
+                        country_name TEXT NOT NULL,
+                        product_name TEXT NOT NULL,
+                        product_name_en TEXT NOT NULL DEFAULT '',
+                        amazon_account TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL,
+                        source_modified_at TEXT NOT NULL DEFAULT '',
+                        data_version TEXT NOT NULL,
+                        schema_version INTEGER NOT NULL
+                    );
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "X1", "X1", "A1", "SKU1", "US", "미국", "상품1",
+                        "", "", "Published", "", "V1", 1,
+                    ),
+                )
+                conn.executemany(
+                    "INSERT INTO metadata VALUES (?, ?)",
+                    (
+                        ("data_version", "V1"),
+                        ("schema_version", "1"),
+                        ("synced_at", "2026-08-11T00:00:00+00:00"),
+                    ),
+                )
         self.assertEqual(self.cache.lookup("X1", "US").sku, "SKU1")
 
     def test_missing_required_value_preserves_previous_database(self):

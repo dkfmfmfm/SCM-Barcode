@@ -1,6 +1,6 @@
 # BeyondPack 상품동기화·포장 프로그램 개발계획
 
-> 기준 버전: 2.2.1  
+> 기준 버전: 2.2.2  
 > 확정일: 2026-08-11  
 > 상시 상품 원본: Google Sheet  
 > 현장 조회 원본: 로컬 SQLite  
@@ -75,7 +75,7 @@ Google Sheet / BeyondPack
 GoogleSheetsProductSource
    │ 필수 열·복합키·버전·급감 검증
    ▼
-products.new.db ── 무결성 성공 ──► products.db
+products.<PID>.<UUID>.new.db ── 무결성 성공 ──► products.db
                          │
                          └────────► products.previous.db
 
