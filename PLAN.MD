@@ -100,7 +100,7 @@ products.new.db ── 무결성 성공 ──► products.db
 | `ItemCode` | Y | 사내 품목코드 |
 | `SKU` | Y | 판매 SKU |
 | `CountryCode` | Y | US, CA, JP, UK, DE 등 |
-| `CountryName` | Y | 작업자 표시 국가 |
+| `CountryName` | N | 이전 파일 호환용. 없으면 `CountryCode`를 국가로 표시 |
 | `ProductName` | Y | 한글 품목명 |
 | `ProductNameEn` | N | 영문 품목명 |
 | `AmazonAccount` | N | 판매계정 |
@@ -109,6 +109,8 @@ products.new.db ── 무결성 성공 ──► products.db
 | `DataVersion` | N | 비우면 CSV 내용 해시로 자동 생성 |
 | `SchemaVersion` | N | 기본값 2 |
 | `LookupKey` | N | 비우면 `FNSKU|CountryCode` 자동 생성 |
+
+신규 `BeyondPack_Master`에는 `CountryName` 열을 만들지 않는다. 기존 CSV·Excel에 해당 열이 남아 있으면 계속 읽을 수 있다.
 
 ### 5.2 고유키
 
