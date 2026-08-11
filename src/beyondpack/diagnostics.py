@@ -34,8 +34,11 @@ def create_diagnostic_bundle(data_dir: Path, output_dir: Path) -> Path:
         },
     }
     db_check = {}
-    for db_name in ("products.db", "packaging.db"):
-        db_path = data_dir / db_name
+    database_paths = {
+        f"active:{cache.active_db_path.name}": cache.active_db_path,
+        "packaging.db": data_dir / "packaging.db",
+    }
+    for db_name, db_path in database_paths.items():
         if db_path.exists():
             try:
                 with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:

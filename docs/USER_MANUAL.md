@@ -1,6 +1,6 @@
-# BeyondPack 2.2.2 사용자 매뉴얼
+# BeyondPack 2.2.3 사용자 매뉴얼
 
-이 문서는 BeyondPack 2.2.2 설치형 Windows 프로그램의 현장 작업자·관리자 공용 매뉴얼이다. 프로그램은 Google Sheet의 상품정보를 내려받아 검증된 로컬 DB로 보관하고, 포장 작업 중에는 로컬 DB에서 `FNSKU+국가` 조합으로 상품을 조회한다.
+이 문서는 BeyondPack 2.2.3 설치형 Windows 프로그램의 현장 작업자·관리자 공용 매뉴얼이다. 프로그램은 Google Sheet의 상품정보를 내려받아 검증된 로컬 DB로 보관하고, 포장 작업 중에는 로컬 DB에서 `FNSKU+국가` 조합으로 상품을 조회한다.
 
 ## 1. 프로그램 운영 구조
 
@@ -8,8 +8,8 @@
 Google Sheet BeyondPack
         ↓ 시작 시 자동 다운로드 / F2 수동 업데이트
 형식·필수값·중복·건수 검증
-        ↓ 검증 성공 시에만 교체
-PC 로컬 상품DB(products.db)
+        ↓ 검증 성공 시 활성 포인터 전환
+PC 로컬 상품DB 스냅샷(products.snapshot.*.db)
         ↓ 오프라인 조회
 국가 선택 + FNSKU 스캔 → 포장정보 입력 → 작업 저장·라벨 출력
 ```
@@ -23,7 +23,7 @@ PC 로컬 상품DB(products.db)
 
 ### 2.1 권장 설치 방법
 
-1. GitHub Release에서 `BeyondPack-2.2.0-Windows-x64-Setup.exe`를 내려받는다.
+1. GitHub Release에서 `BeyondPack-2.2.3-Windows-x64-Setup.exe`를 내려받는다.
 2. 설치파일을 실행한다. 이 설치 방식은 일반 사용자 권한으로 설치할 수 있다.
 3. 설치 화면에서 바탕화면 바로가기 생성을 유지하고 설치를 완료한다.
 4. 바탕화면의 `BeyondPack` 아이콘을 실행한다.
@@ -57,6 +57,7 @@ Windows가 게시자를 확인할 수 없다고 표시할 수 있다. 현재 배
 - `1. 상품 스캔`: FNSKU를 스캔하고 품목명, 품목코드, SKU, FNSKU, 국가를 확인한다.
 - `2. 박스 구성품`: 한 박스에 들어갈 단품 또는 합포 상품과 박스당 수량을 보여준다.
 - `3. 포장정보 입력`: 박스수량, 박스당 무게, 가로, 세로, 높이를 작업자가 입력한다.
+- 숫자 입력칸 오른쪽의 큰 `▲/▼` 버튼은 각각 값을 한 단계 올리고 내린다. 버튼을 계속 누르면 연속 증감한다.
 - `다음 행동`: 현재 단계에서 해야 할 작업 또는 오류 해결 방향을 표시한다.
 
 ### 3.3 상품DB 상태의 의미
@@ -213,7 +214,8 @@ X001ABC123  JP
 | Google Sheet 필수 열이 없습니다 | 첫 행 열 이름이 틀렸거나 다른 탭 URL이다. | `BeyondPack` 탭과 필수 열 이름을 확인한다. |
 | 동일 FNSKU+국가 중복 | 같은 조회키가 두 행 이상 있다. | 중복 행을 정리한 뒤 F2를 다시 누른다. |
 | 상품 수 급감으로 업데이트 차단 | 새 데이터가 기존보다 20% 이상 줄었다. | 필터·삭제·CSV 공개 범위를 확인하고 정상 건수를 복원한다. |
-| 다른 프로세스가 파일을 사용 중입니다 / WinError 32 | 구버전의 SQLite 읽기 연결 또는 실행 중인 BeyondPack이 상품DB를 잠갔다. | BeyondPack.exe를 모두 종료하고 2.2.2 이상으로 업데이트한 뒤 한 번만 실행한다. Google Sheet와 비상 Excel 모두 같은 조치가 적용된다. |
+| 다른 프로세스가 파일을 사용 중입니다 / WinError 32 | 구버전이 고정 `products.db`를 교체하려 했거나 외부 프로그램이 파일을 잠갔다. | 2.2.3 이상으로 업데이트한다. 새 버전은 잠긴 파일을 덮어쓰지 않고 별도 스냅샷으로 전환한다. |
+| 수량 화살표가 반응하지 않음 | 구버전 기본 스핀박스의 클릭영역 문제다. | 2.2.3 이상에서 숫자칸 오른쪽의 큰 `▲/▼` 버튼을 사용한다. |
 | 박스에 상품을 한 개 이상 추가하세요 | 조회만 하고 구성품에 추가하지 않았다. | 박스당 수량 입력 후 `합포 구성에 추가`를 누른다. |
 | 작업자 이름 또는 사번을 입력하세요 | 작업자 정보가 비어 있다. | 상단 작업자 입력 후 다시 확정한다. |
 | 무게/규격 오류 | 값이 0이거나 허용 범위를 벗어났다. | 실측값과 단위(kg/cm)를 확인한다. |
@@ -240,15 +242,16 @@ X001ABC123  JP
 
 ```text
 %LOCALAPPDATA%\BeyondPack\config.json
-%LOCALAPPDATA%\BeyondPack\data\products.db
-%LOCALAPPDATA%\BeyondPack\data\products.previous.db
+%LOCALAPPDATA%\BeyondPack\data\products.current.json
+%LOCALAPPDATA%\BeyondPack\data\products.snapshot.<PID>.<UUID>.db
 %LOCALAPPDATA%\BeyondPack\data\packaging.db
 %LOCALAPPDATA%\BeyondPack\data\sync-status.json
 %LOCALAPPDATA%\BeyondPack\logs\startup.log
 ```
 
-- `products.db`: 현재 정상 상품 캐시
-- `products.previous.db`: 직전 정상 상품 캐시
+- `products.current.json`: 현재·직전 상품DB 스냅샷 이름을 가리키는 포인터
+- `products.snapshot.*.db`: 현재와 직전 정상 상품 캐시. 오래된 스냅샷은 자동 정리
+- `products.db`, `products.previous.db`: 업그레이드 호환용 기존 캐시. 새 버전은 잠겨 있어도 덮어쓰지 않음
 - `packaging.db`: 확정 작업과 미완료 입력
 - `config.json`: Google Sheet 주소와 운영 설정
 

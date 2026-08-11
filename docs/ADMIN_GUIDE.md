@@ -11,7 +11,7 @@
 
 평상시에는 프로그램 시작 시 Google Sheet CSV가 자동 다운로드된다. 실행 중 즉시 반영해야 하면 `F2`를 누른다. 작업자는 CSV를 따로 다운로드하지 않는다.
 
-업데이트 순서는 `다운로드 → 필수 열 검사 → FNSKU+국가 중복 검사 → 필수값·버전 검사 → 새 SQLite 무결성 검사 → 기존 DB 백업 → 원자 교체`다. 어느 단계에서든 실패하면 기존 `products.db`를 그대로 사용한다.
+업데이트 순서는 `다운로드 → 필수 열 검사 → FNSKU+국가 중복 검사 → 필수값·버전 검사 → 새 불변 SQLite 스냅샷 생성·무결성 검사 → 활성 포인터 원자 전환`이다. 어느 단계에서든 실패하면 기존 활성 스냅샷을 그대로 사용한다. 고정 `products.db`를 덮어쓰지 않으므로 백신·잔존 프로세스의 파일 잠금에도 업데이트가 막히지 않는다.
 
 Google Sheet 장애 시 `Excel 비상 업데이트`로 `.xlsx`를 선택한다. `BeyondPack` 시트를 우선 사용하며 기존 `BeyondPack_Master`도 호환한다. 둘 다 없으면 첫 시트를 사용한다. Excel도 Google Sheet와 동일한 열과 검증 규칙을 따른다.
 
@@ -19,8 +19,9 @@ Google Sheet 장애 시 `Excel 비상 업데이트`로 `.xlsx`를 선택한다. 
 
 | 파일 | 용도 |
 |---|---|
-| `products.db` | 현재 검증된 상품 캐시 |
-| `products.previous.db` | 직전 정상 상품 캐시 |
+| `products.current.json` | 현재·직전 상품 스냅샷 포인터 |
+| `products.snapshot.*.db` | 현재·직전 검증 상품 캐시 |
+| `products.db`, `products.previous.db` | 업그레이드 호환용 기존 캐시 |
 | `packaging.db` | 작업·합포·감사·임시저장 |
 | `sync-status.json` | 마지막 업데이트 결과 |
 | `config.json` | Google Sheet 주소와 제한값 |

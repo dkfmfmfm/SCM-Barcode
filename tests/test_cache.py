@@ -46,6 +46,8 @@ class CacheTests(unittest.TestCase):
     def test_atomic_snapshot_and_normalized_lookup(self):
         info = self.cache.replace_snapshot(ProductBatch((product("x003abc123"),), "V1", 2))
         self.assertEqual(info.product_count, 1)
+        self.assertTrue(self.cache.active_db_path.name.startswith("products.snapshot."))
+        self.assertTrue(self.cache.manifest_path.exists())
         found = self.cache.lookup(" X003ABC123\r\n", "us")
         self.assertEqual(found.item_code, "A000000010")
         self.assertEqual(self.cache.info().data_version, "V1")
@@ -54,7 +56,8 @@ class CacheTests(unittest.TestCase):
         first = self.cache._new_snapshot_path()
         second = self.cache._new_snapshot_path()
         self.assertNotEqual(first, second)
-        self.assertTrue(first.name.endswith(".new.db"))
+        self.assertTrue(first.name.startswith("products.snapshot."))
+        self.assertTrue(first.name.endswith(".db"))
 
     def test_windows_file_lock_is_retried(self):
         source = Path(self.temp.name) / "source.db"
@@ -88,6 +91,60 @@ class CacheTests(unittest.TestCase):
 
         self.cache.replace_snapshot(ProductBatch((product("X2", version="V2"),), "V2", 2))
         self.assertEqual(self.cache.lookup("X2", "US").data_version, "V2")
+
+    def test_locked_legacy_database_does_not_block_new_snapshot_activation(self):
+        legacy_batch = ProductBatch((product("X1"),), "V1", 2)
+        self.cache.data_dir.mkdir(parents=True, exist_ok=True)
+        self.cache._write_database(
+            self.cache.db_path,
+            legacy_batch.products,
+            legacy_batch,
+            "2026-08-11T00:00:00+00:00",
+        )
+
+        with closing(sqlite3.connect(self.cache.db_path)) as locked_connection:
+            locked_connection.execute("SELECT COUNT(*) FROM products").fetchone()
+            result = self.cache.replace_snapshot(
+                ProductBatch((product("X2", version="V2"),), "V2", 2)
+            )
+            self.assertEqual(result.data_version, "V2")
+            self.assertNotEqual(self.cache.active_db_path, self.cache.db_path)
+            self.assertEqual(self.cache.lookup("X2", "US").data_version, "V2")
+
+    def test_missing_current_snapshot_falls_back_to_previous(self):
+        self.cache.replace_snapshot(ProductBatch((product("X1"),), "V1", 2))
+        first = self.cache.active_db_path
+        self.cache.replace_snapshot(
+            ProductBatch((product("X2", version="V2"),), "V2", 2)
+        )
+        current = self.cache.active_db_path
+        current.unlink()
+        self.assertEqual(self.cache.active_db_path, first)
+        self.assertEqual(self.cache.lookup("X1", "US").data_version, "V1")
+
+    def test_only_current_and_previous_snapshots_are_retained(self):
+        for number in range(1, 4):
+            version = f"V{number}"
+            self.cache.replace_snapshot(
+                ProductBatch((product(f"X{number}", version=version),), version, 2)
+            )
+        snapshots = tuple(self.cache.data_dir.glob("products.snapshot.*.db"))
+        self.assertEqual(len(snapshots), 2)
+
+    def test_manifest_switch_failure_preserves_active_snapshot(self):
+        self.cache.replace_snapshot(ProductBatch((product("X1"),), "V1", 2))
+        active_before = self.cache.active_db_path
+        with patch.object(
+            self.cache,
+            "_write_manifest",
+            side_effect=PermissionError("manifest locked"),
+        ):
+            with self.assertRaises(PermissionError):
+                self.cache.replace_snapshot(
+                    ProductBatch((product("X2", version="V2"),), "V2", 2)
+                )
+        self.assertEqual(self.cache.active_db_path, active_before)
+        self.assertEqual(self.cache.lookup("X1", "US").data_version, "V1")
 
     def test_duplicate_composite_key_rejects_entire_snapshot(self):
         batch = ProductBatch((product("X1"), product(" x1 ")), "V1", 2)

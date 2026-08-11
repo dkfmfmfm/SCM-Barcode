@@ -1,4 +1,4 @@
-# BeyondPack 2.2.2
+# BeyondPack 2.2.3
 
 `PLAN.MD`와 `RESEARCH.MD`를 기준으로 구현한 Windows 포장 작업 프로그램이다. 평상시 Google Sheet를 CSV로 자동 다운로드하고, 검증에 성공한 상품만 로컬 SQLite에 저장한다. 실제 스캔 조회는 네트워크가 아니라 `FNSKU+CountryCode` 로컬 인덱스를 사용한다.
 
@@ -6,7 +6,7 @@
 
 - 기본 상품 원본: Google Sheet의 `BeyondPack` 탭
 - 자동 업데이트: 프로그램 시작 시, 또는 `F2` 실행 시 CSV 자동 다운로드
-- 현장 조회: 로컬 `products.db`에서 즉시 조회
+- 현장 조회: 활성 로컬 상품DB 스냅샷에서 즉시 조회
 - 장애 대응: 다운로드·형식·중복 오류 시 기존 DB 유지
 - 비상 업데이트: 관리자가 `.xlsx` 파일을 직접 선택해 동일 검증 후 반영
 - 포장정보: 박스수량·무게·가로·세로·높이·박스당 상품수량은 작업자가 입력
@@ -17,7 +17,8 @@
 - 품목명·품목코드·SKU·FNSKU·국가 읽기 전용 표시
 - 한 박스에 여러 FNSKU와 수량을 담는 합포
 - 상품 수 20% 이상 급감, 필수값 누락, 스키마 불일치 시 전체 업데이트 차단
-- 고유 임시 DB 검증 후 읽기 연결을 닫고 원자 교체, 직전 DB 자동 백업
+- 잠긴 기존 DB를 덮어쓰지 않는 불변 스냅샷과 활성 포인터 방식, 직전 DB 자동 보존
+- 모든 숫자 입력칸에 현장용 대형 `▲/▼` 증감 버튼 제공
 - 인터넷 장애와 오래된 캐시 경고 중에도 기존 검증 DB로 작업 가능
 - 포장 당시 상품정보·상품DB 버전 스냅샷 저장
 - 자동 임시저장과 비정상 종료 복구
@@ -58,8 +59,8 @@ SchemaVersion
 
 ```text
 %LOCALAPPDATA%\BeyondPack\config.json
-%LOCALAPPDATA%\BeyondPack\data\products.db
-%LOCALAPPDATA%\BeyondPack\data\products.previous.db
+%LOCALAPPDATA%\BeyondPack\data\products.current.json
+%LOCALAPPDATA%\BeyondPack\data\products.snapshot.<PID>.<UUID>.db
 %LOCALAPPDATA%\BeyondPack\data\packaging.db
 %LOCALAPPDATA%\BeyondPack\logs\startup.log
 ```

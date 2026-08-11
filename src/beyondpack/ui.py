@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction, QKeySequence, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QApplication,
     QComboBox,
     QDoubleSpinBox,
@@ -228,11 +229,12 @@ class MainWindow(QMainWindow):
         add_row = QHBoxLayout()
         add_row.addWidget(QLabel("박스당 상품수량"))
         self.qty_input = QSpinBox()
+        self.qty_input.setObjectName("qtyInput")
         self.qty_input.setRange(1, 999999)
+        self.qty_input.setSingleStep(1)
         self.qty_input.setValue(1)
         self.qty_input.setSuffix(" EA")
-        self.qty_input.setMinimumHeight(38)
-        add_row.addWidget(self.qty_input)
+        add_row.addWidget(self._stepper(self.qty_input, "qty", "박스당 상품수량"))
         self.add_item_button = QPushButton("합포 구성에 추가")
         self.add_item_button.setObjectName("primaryButton")
         self.add_item_button.setMinimumHeight(38)
@@ -262,17 +264,19 @@ class MainWindow(QMainWindow):
         form = QFormLayout(package_group)
         form.setVerticalSpacing(13)
         self.box_count = QSpinBox()
+        self.box_count.setObjectName("boxCountInput")
         self.box_count.setRange(1, 99999)
+        self.box_count.setSingleStep(1)
         self.box_count.setSuffix(" BOX")
-        self.weight = self._decimal_box(" kg / BOX", 3, self.config.weight_max_kg)
-        self.length = self._decimal_box(" cm", 2, self.config.dimension_max_cm)
-        self.width = self._decimal_box(" cm", 2, self.config.dimension_max_cm)
-        self.height = self._decimal_box(" cm", 2, self.config.dimension_max_cm)
-        form.addRow("박스수량", self.box_count)
-        form.addRow("무게", self.weight)
-        form.addRow("가로", self.length)
-        form.addRow("세로", self.width)
-        form.addRow("높이", self.height)
+        self.weight = self._decimal_box("weightInput", " kg / BOX", 3, self.config.weight_max_kg)
+        self.length = self._decimal_box("lengthInput", " cm", 2, self.config.dimension_max_cm)
+        self.width = self._decimal_box("widthInput", " cm", 2, self.config.dimension_max_cm)
+        self.height = self._decimal_box("heightInput", " cm", 2, self.config.dimension_max_cm)
+        form.addRow("박스수량", self._stepper(self.box_count, "boxCount", "박스수량"))
+        form.addRow("무게", self._stepper(self.weight, "weight", "무게"))
+        form.addRow("가로", self._stepper(self.length, "length", "가로"))
+        form.addRow("세로", self._stepper(self.width, "width", "세로"))
+        form.addRow("높이", self._stepper(self.height, "height", "높이"))
         right.addWidget(package_group)
 
         self.confirm_button = QPushButton("Ctrl+Enter  박스 확정")
@@ -312,14 +316,62 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("준비")
         self.setStyleSheet(self._stylesheet())
 
-    def _decimal_box(self, suffix: str, decimals: int, maximum: float) -> QDoubleSpinBox:
+    def _decimal_box(
+        self, object_name: str, suffix: str, decimals: int, maximum: float
+    ) -> QDoubleSpinBox:
         box = QDoubleSpinBox()
+        box.setObjectName(object_name)
         box.setRange(0, maximum)
         box.setDecimals(decimals)
         box.setSingleStep(0.1)
         box.setSuffix(suffix)
-        box.setMinimumHeight(40)
         return box
+
+    def _stepper(
+        self, box: QAbstractSpinBox, key: str, field_name: str
+    ) -> QWidget:
+        box.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        box.setAlignment(Qt.AlignRight)
+        box.setMinimumHeight(46)
+        box.setMinimumWidth(130)
+
+        wrapper = QWidget()
+        wrapper.setObjectName("numericStepper")
+        row = QHBoxLayout(wrapper)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(5)
+        row.addWidget(box, 1)
+
+        button_column = QVBoxLayout()
+        button_column.setContentsMargins(0, 0, 0, 0)
+        button_column.setSpacing(3)
+        up_button = QPushButton("▲")
+        down_button = QPushButton("▼")
+        for button, action_name in (
+            (up_button, "올리기"),
+            (down_button, "내리기"),
+        ):
+            button.setProperty("stepperButton", True)
+            button.setMinimumSize(44, 21)
+            button.setMaximumHeight(22)
+            button.setAutoRepeat(True)
+            button.setAutoRepeatDelay(350)
+            button.setAutoRepeatInterval(90)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setAccessibleName(f"{field_name} {action_name}")
+            button.setToolTip(f"{field_name} {action_name}")
+        up_button.setObjectName(f"{key}StepUp")
+        down_button.setObjectName(f"{key}StepDown")
+        up_button.clicked.connect(box.stepUp)
+        down_button.clicked.connect(box.stepDown)
+        button_column.addWidget(up_button)
+        button_column.addWidget(down_button)
+        row.addLayout(button_column)
+
+        if not hasattr(self, "step_buttons"):
+            self.step_buttons: dict[str, tuple[QPushButton, QPushButton]] = {}
+        self.step_buttons[key] = (up_button, down_button)
+        return wrapper
 
     def _build_actions(self) -> None:
         shortcuts = [
@@ -800,6 +852,10 @@ class MainWindow(QMainWindow):
         QGroupBox::title { subcontrol-origin: margin; left: 13px; padding: 0 5px; }
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 7px; font-size: 16px; }
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 2px solid #2563EB; }
+        QWidget#numericStepper { background: transparent; }
+        QPushButton[stepperButton="true"] { background:#F8FAFC; border:1px solid #AEB7C4; border-radius:4px; padding:0; font-size:11px; font-weight:800; }
+        QPushButton[stepperButton="true"]:hover { background:#EAF2FF; border-color:#2563EB; }
+        QPushButton[stepperButton="true"]:pressed { background:#BFDBFE; }
         QComboBox#countrySelector { background: #FFF7E6; border: 2px solid #D97706; font-weight: 800; }
         QLineEdit#readonlyField { background: #F1F4F8; color: #0B1F3A; font-weight: 650; }
         QLabel#fieldCaption { color: #667085; font-size: 12px; }
