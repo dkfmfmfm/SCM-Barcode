@@ -15,7 +15,6 @@ REQUIRED_HEADERS = {
     "ItemCode",
     "SKU",
     "CountryCode",
-    "CountryName",
     "ProductName",
 }
 
