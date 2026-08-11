@@ -168,7 +168,7 @@ class ProductCacheRepository:
                     {
                         "품목코드": product.item_code,
                         "SKU": product.sku,
-                        "국가명": product.country_name,
+                        "국가": product.country_name,
                         "품목명": product.product_name,
                     }
                 )
