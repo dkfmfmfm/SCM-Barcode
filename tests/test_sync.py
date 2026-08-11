@@ -24,11 +24,11 @@ def batch(version="V1"):
         (
             Product(
                 "X1", "A1", "SKU1", "US", "미국", "상품1",
-                status="Published", data_version=version, schema_version=1,
+                status="Published", data_version=version, schema_version=2, lookup_key="X1|US",
             ),
         ),
         version,
-        1,
+        2,
     )
 
 
@@ -41,7 +41,7 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(ok.state, "CURRENT")
             failed = ProductSyncService(FakeSource(error=OSError("offline")), cache, root / "status.json").sync()
             self.assertEqual(failed.state, "CACHED")
-            self.assertEqual(cache.lookup("X1").sku, "SKU1")
+            self.assertEqual(cache.lookup("X1", "US").sku, "SKU1")
 
     def test_first_sync_failure_blocks_without_data(self):
         with tempfile.TemporaryDirectory() as directory:
