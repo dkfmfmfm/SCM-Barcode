@@ -105,13 +105,23 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 ```
 
-## Windows 실행파일 빌드
+## Windows 실행파일 다운로드·빌드
+
+GitHub Releases의 `v2.1.0` 사전 릴리스는 다음 두 형식을 제공한다.
+
+- `BeyondPack-2.1.0-Windows-x64-portable.zip`: 현장 권장본. 압축 해제 후 `BeyondPack\BeyondPack.exe` 실행
+- `BeyondPack-2.1.0-Windows-x64.exe`: 단일 파일. 배포는 간단하지만 첫 실행이 더 느릴 수 있음
+
+`SHA256SUMS.txt`로 파일 무결성을 확인한다. 현재 빌드는 코드서명과 현장 UAT 전이므로 운영 전 사내 코드서명·SmartScreen·백신·실제 장비 검증이 필요하다.
+
+직접 빌드할 때는 다음 명령을 사용한다.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -OneFile
 ```
 
-결과물은 `dist\BeyondPack\BeyondPack.exe`에 생성된다. 운영 배포 전 회사 코드서명, 실제 라벨 규격, 프린터 드라이버, 백신 예외가 아닌 정상 평판 배포 절차를 검증한다.
+결과물은 각각 `dist\portable\BeyondPack\BeyondPack.exe`, `dist\onefile\BeyondPack.exe`에 생성된다. 운영 배포 전 회사 코드서명, 실제 라벨 규격, 프린터 드라이버, 백신 예외가 아닌 정상 평판 배포 절차를 검증한다.
 
 ## 아직 운영 정보가 필요한 항목
 
