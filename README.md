@@ -53,7 +53,7 @@ SchemaVersion
 3. 상단 `Sheet 설정`을 누르고 해당 탭이 열린 Google Sheet 주소를 붙여넣는다.
 4. 프로그램이 CSV를 자동 다운로드하고 검증한 뒤 국가 목록을 표시한다.
 
-세부 내용은 [`docs/GOOGLE_SHEETS_SETUP.md`](docs/GOOGLE_SHEETS_SETUP.md)를 따른다.
+전체 설치·설정·단품·합포·라벨·오류대응 절차는 [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)를 참고한다. 상품 마스터 작성 세부 내용은 [`docs/GOOGLE_SHEETS_SETUP.md`](docs/GOOGLE_SHEETS_SETUP.md)를 따른다.
 
 ## 데이터 위치
 
