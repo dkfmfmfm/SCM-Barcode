@@ -31,6 +31,7 @@ jobs:
           grep -Fq "포장" PLAN.MD
           grep -Fq "PLAN.MD" RESEARCH.MD
           test -s docs/GOOGLE_SHEETS_SETUP.md
+          test -s docs/USER_MANUAL.md
           test -s templates/BeyondPack_Master_Template.csv
 
       - name: Run core tests
