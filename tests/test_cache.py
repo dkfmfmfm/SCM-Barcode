@@ -65,6 +65,29 @@ class CacheTests(unittest.TestCase):
             self.cache._replace_with_retry(source, target)
         self.assertEqual(replace.call_count, 2)
 
+    def test_read_connections_are_closed_before_snapshot_replacement(self):
+        self.cache.replace_snapshot(ProductBatch((product("X1"),), "V1", 2))
+        real_connect = sqlite3.connect
+        opened = []
+
+        def tracked_connect(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            opened.append(connection)
+            return connection
+
+        with patch("beyondpack.cache.sqlite3.connect", side_effect=tracked_connect):
+            self.cache.info()
+            self.cache.available_countries()
+            self.cache.lookup("X1", "US")
+
+        self.assertEqual(len(opened), 3)
+        for connection in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
+        self.cache.replace_snapshot(ProductBatch((product("X2", version="V2"),), "V2", 2))
+        self.assertEqual(self.cache.lookup("X2", "US").data_version, "V2")
+
     def test_duplicate_composite_key_rejects_entire_snapshot(self):
         batch = ProductBatch((product("X1"), product(" x1 ")), "V1", 2)
         with self.assertRaises(DuplicateProductKeyError):

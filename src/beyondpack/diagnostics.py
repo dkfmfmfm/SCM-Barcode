@@ -4,6 +4,7 @@ import json
 import platform
 import sqlite3
 import zipfile
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def create_diagnostic_bundle(data_dir: Path, output_dir: Path) -> Path:
         db_path = data_dir / db_name
         if db_path.exists():
             try:
-                with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
                     db_check[db_name] = conn.execute("PRAGMA integrity_check").fetchone()[0]
             except sqlite3.Error as exc:
                 db_check[db_name] = f"ERROR: {exc}"

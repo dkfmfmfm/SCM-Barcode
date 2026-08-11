@@ -5,10 +5,12 @@ import shutil
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from threading import RLock
+from typing import Iterable, Iterator
 
 from .errors import (
     CountrySelectionRequiredError,
@@ -38,6 +40,7 @@ class ProductCacheRepository:
         self.data_dir = data_dir
         self.db_path = data_dir / "products.db"
         self.previous_path = data_dir / "products.previous.db"
+        self._io_lock = RLock()
 
     def _new_snapshot_path(self) -> Path:
         return self.data_dir / f"products.{os.getpid()}.{uuid.uuid4().hex}.new.db"
@@ -46,34 +49,35 @@ class ProductCacheRepository:
         return self.db_path.exists()
 
     def replace_snapshot(self, batch: ProductBatch, drop_threshold: float = 0.20) -> CacheInfo:
-        products = self._validate_batch(batch)
-        previous_count = self.info().product_count if self.exists() else 0
-        if previous_count and len(products) < previous_count * (1 - drop_threshold):
-            drop = 1 - (len(products) / previous_count)
-            raise DataValidationError(
-                f"상품 수가 이전보다 {drop:.1%} 감소해 새 데이터 적용을 중단했습니다."
-            )
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        new_path = self._new_snapshot_path()
-        synced_at = utc_now_iso()
-        try:
-            self._write_database(new_path, products, batch, synced_at)
-            self._integrity_check(new_path, len(products))
-            if self.db_path.exists():
-                shutil.copy2(self.db_path, self.previous_path)
-            self._replace_with_retry(new_path, self.db_path)
-        finally:
+        with self._io_lock:
+            products = self._validate_batch(batch)
+            previous_count = self.info().product_count if self.exists() else 0
+            if previous_count and len(products) < previous_count * (1 - drop_threshold):
+                drop = 1 - (len(products) / previous_count)
+                raise DataValidationError(
+                    f"상품 수가 이전보다 {drop:.1%} 감소해 새 데이터 적용을 중단했습니다."
+                )
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            new_path = self._new_snapshot_path()
+            synced_at = utc_now_iso()
             try:
-                new_path.unlink(missing_ok=True)
-            except OSError:
-                # Virus scanners or a terminating SQLite handle can briefly keep a
-                # failed staging file open on Windows. Its unique name makes it
-                # harmless, so cleanup must not hide the real synchronization result.
-                pass
-        return CacheInfo(len(products), batch.data_version, batch.schema_version, synced_at)
+                self._write_database(new_path, products, batch, synced_at)
+                self._integrity_check(new_path, len(products))
+                if self.db_path.exists():
+                    shutil.copy2(self.db_path, self.previous_path)
+                self._replace_with_retry(new_path, self.db_path)
+            finally:
+                try:
+                    new_path.unlink(missing_ok=True)
+                except OSError:
+                    # Virus scanners can briefly keep a failed staging file open on
+                    # Windows. Its unique name makes it harmless, so cleanup must not
+                    # hide the real synchronization result.
+                    pass
+            return CacheInfo(len(products), batch.data_version, batch.schema_version, synced_at)
 
     @staticmethod
-    def _replace_with_retry(source: Path, target: Path, attempts: int = 6) -> None:
+    def _replace_with_retry(source: Path, target: Path, attempts: int = 10) -> None:
         for attempt in range(attempts):
             try:
                 os.replace(source, target)
@@ -87,19 +91,20 @@ class ProductCacheRepository:
                 time.sleep(0.1 * (attempt + 1))
 
     def available_countries(self) -> tuple[tuple[str, str], ...]:
-        if not self.db_path.exists():
-            return ()
-        with self._connect(self.db_path, read_only=True) as conn:
-            rows = conn.execute(
-                """
-                SELECT country_code, MAX(country_name) AS country_name
-                FROM products
-                WHERE lower(status) = 'published'
-                GROUP BY country_code
-                ORDER BY country_code
-                """
-            ).fetchall()
-        return tuple((str(row["country_code"]), str(row["country_name"])) for row in rows)
+        with self._io_lock:
+            if not self.db_path.exists():
+                return ()
+            with self._connect(self.db_path, read_only=True) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT country_code, MAX(country_name) AS country_name
+                    FROM products
+                    WHERE lower(status) = 'published'
+                    GROUP BY country_code
+                    ORDER BY country_code
+                    """
+                ).fetchall()
+            return tuple((str(row["country_code"]), str(row["country_name"])) for row in rows)
 
     def lookup(self, fnsku: object, country_code: object) -> Product:
         key = normalize_fnsku(fnsku)
@@ -108,26 +113,27 @@ class ProductCacheRepository:
             raise ProductNotFoundError("FNSKU를 스캔하거나 입력하세요.")
         if not country:
             raise CountrySelectionRequiredError("먼저 작업 국가를 선택하세요.")
-        if not self.db_path.exists():
-            raise ProductNotFoundError("사용할 상품DB가 없습니다. 상품정보를 업데이트하세요.")
-        with self._connect(self.db_path, read_only=True) as conn:
-            row = conn.execute(
-                """
-                SELECT fnsku, item_code, sku, country_code, country_name,
-                       product_name, product_name_en, amazon_account, status,
-                       source_modified_at, data_version, schema_version
-                FROM products WHERE normalized_fnsku = ? AND country_code = ?
-                """,
-                (key, country),
-            ).fetchone()
-            available = conn.execute(
-                """
-                SELECT country_code FROM products
-                WHERE normalized_fnsku = ? AND lower(status) = 'published'
-                ORDER BY country_code
-                """,
-                (key,),
-            ).fetchall()
+        with self._io_lock:
+            if not self.db_path.exists():
+                raise ProductNotFoundError("사용할 상품DB가 없습니다. 상품정보를 업데이트하세요.")
+            with self._connect(self.db_path, read_only=True) as conn:
+                row = conn.execute(
+                    """
+                    SELECT fnsku, item_code, sku, country_code, country_name,
+                           product_name, product_name_en, amazon_account, status,
+                           source_modified_at, data_version, schema_version
+                    FROM products WHERE normalized_fnsku = ? AND country_code = ?
+                    """,
+                    (key, country),
+                ).fetchone()
+                available = conn.execute(
+                    """
+                    SELECT country_code FROM products
+                    WHERE normalized_fnsku = ? AND lower(status) = 'published'
+                    ORDER BY country_code
+                    """,
+                    (key,),
+                ).fetchall()
         if row is None:
             if available:
                 codes = ", ".join(str(item["country_code"]) for item in available)
@@ -143,17 +149,18 @@ class ProductCacheRepository:
         return product
 
     def info(self) -> CacheInfo:
-        if not self.db_path.exists():
-            return CacheInfo(0, "", 0, "")
-        with self._connect(self.db_path, read_only=True) as conn:
-            values = dict(conn.execute("SELECT key, value FROM metadata").fetchall())
-            count = int(conn.execute("SELECT COUNT(*) FROM products").fetchone()[0])
-        return CacheInfo(
-            count,
-            values.get("data_version", ""),
-            int(values.get("schema_version", 0)),
-            values.get("synced_at", ""),
-        )
+        with self._io_lock:
+            if not self.db_path.exists():
+                return CacheInfo(0, "", 0, "")
+            with self._connect(self.db_path, read_only=True) as conn:
+                values = dict(conn.execute("SELECT key, value FROM metadata").fetchall())
+                count = int(conn.execute("SELECT COUNT(*) FROM products").fetchone()[0])
+            return CacheInfo(
+                count,
+                values.get("data_version", ""),
+                int(values.get("schema_version", 0)),
+                values.get("synced_at", ""),
+            )
 
     def cache_age_hours(self) -> float | None:
         synced = self.info().synced_at
@@ -212,14 +219,19 @@ class ProductCacheRepository:
         return products
 
     @staticmethod
-    def _connect(path: Path, read_only: bool = False) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(path: Path, read_only: bool = False) -> Iterator[sqlite3.Connection]:
         if read_only:
             conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         else:
             conn = sqlite3.connect(path, timeout=10)
         conn.execute("PRAGMA foreign_keys = ON")
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _write_database(
         self, path: Path, products: Iterable[Product], batch: ProductBatch, synced_at: str

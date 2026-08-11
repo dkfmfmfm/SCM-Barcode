@@ -1,7 +1,9 @@
 import tempfile
 import unittest
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from beyondpack.models import BoxGroupInput, BoxItem
 from beyondpack.packaging import PackagingRepository
@@ -38,7 +40,24 @@ class PackagingTests(unittest.TestCase):
         self.repo.clear_draft("current")
         self.assertIsNone(self.repo.load_draft("current"))
 
+    def test_database_connections_are_closed_after_each_operation(self):
+        real_connect = sqlite3.connect
+        opened = []
+
+        def tracked_connect(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            opened.append(connection)
+            return connection
+
+        with patch("beyondpack.packaging.sqlite3.connect", side_effect=tracked_connect):
+            self.repo.save_draft("current", {"fnsku": "X1"})
+            self.repo.load_draft("current")
+
+        self.assertEqual(len(opened), 2)
+        for connection in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
 
 if __name__ == "__main__":
     unittest.main()
-
