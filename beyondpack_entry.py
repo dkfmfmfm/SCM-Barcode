@@ -64,7 +64,10 @@ def run() -> int:
     except BaseException as exc:
         details = traceback.format_exc()
         path = _write_startup_log("FATAL STARTUP ERROR\n" + details)
-        _show_fatal_error(str(exc), path)
+        if "--self-test" in sys.argv:
+            print(details, file=sys.stderr)
+        else:
+            _show_fatal_error(str(exc), path)
         return 1
     _write_startup_log(f"EXIT code={exit_code}")
     return int(exit_code)
