@@ -8,10 +8,25 @@ _SCANNER_WHITESPACE = re.compile(r"[\t\r\n ]+")
 
 
 def normalize_fnsku(value: object) -> str:
-    """Normalize scanner/master input to the unique local lookup key."""
+    """Normalize scanner/master FNSKU input."""
     if value is None:
         return ""
     return _SCANNER_WHITESPACE.sub("", str(value)).upper()
+
+
+def normalize_country_code(value: object) -> str:
+    """Normalize a country code used in the composite product key."""
+    if value is None:
+        return ""
+    return _SCANNER_WHITESPACE.sub("", str(value)).upper()
+
+
+def product_lookup_key(fnsku: object, country_code: object) -> str:
+    normalized_fnsku = normalize_fnsku(fnsku)
+    normalized_country = normalize_country_code(country_code)
+    if not normalized_fnsku or not normalized_country:
+        return ""
+    return f"{normalized_fnsku}|{normalized_country}"
 
 
 def positive_int(value: object, label: str) -> int:
@@ -37,4 +52,3 @@ def positive_decimal(value: object, label: str, max_value: Decimal | None = None
     if max_value is not None and parsed > max_value:
         raise PackagingValidationError(f"{label}은(는) {max_value} 이하여야 합니다.")
     return parsed
-

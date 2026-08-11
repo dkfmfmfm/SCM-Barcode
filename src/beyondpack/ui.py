@@ -11,6 +11,7 @@ from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -121,6 +122,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_actions()
         self._connect_autosave()
+        self._refresh_country_options()
         self._restore_draft()
         self._show_initial_cache_state()
         QTimer.singleShot(150, self.sync_now)
@@ -135,12 +137,19 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("BEYOND PACK")
         title.setObjectName("brandTitle")
-        subtitle = QLabel("FNSKU 기반 오프라인 우선 포장 작업")
+        subtitle = QLabel("국가 + FNSKU 기반 오프라인 우선 포장 작업")
         subtitle.setObjectName("subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         header.addLayout(title_box)
         header.addStretch()
+        header.addWidget(QLabel("작업 국가"))
+        self.country_combo = QComboBox()
+        self.country_combo.setMinimumWidth(175)
+        self.country_combo.setMinimumHeight(42)
+        self.country_combo.setObjectName("countrySelector")
+        self.country_combo.currentIndexChanged.connect(self._country_changed)
+        header.addWidget(self.country_combo)
         header.addWidget(QLabel("작업자"))
         self.operator_input = QLineEdit(config.operator_name)
         self.operator_input.setPlaceholderText("이름 또는 사번")
@@ -338,6 +347,51 @@ class MainWindow(QMainWindow):
             self.cache_blocked = True
             self._set_sync_state("NO_DATA", "처음 사용하려면 상품정보 업데이트가 필요합니다.")
 
+    def _selected_country_code(self) -> str:
+        return str(self.country_combo.currentData() or "").strip().upper()
+
+    def _select_country(self, country_code: str) -> bool:
+        target = country_code.strip().upper()
+        for index in range(self.country_combo.count()):
+            if str(self.country_combo.itemData(index) or "").upper() == target:
+                self.country_combo.setCurrentIndex(index)
+                return True
+        return False
+
+    def _refresh_country_options(self, preferred_code: str = "") -> None:
+        selected = preferred_code.strip().upper() or self._selected_country_code()
+        self.country_combo.blockSignals(True)
+        self.country_combo.clear()
+        self.country_combo.addItem("국가 선택", "")
+        for code, name in self.cache.available_countries():
+            self.country_combo.addItem(f"{name} ({code})", code)
+        self.country_combo.blockSignals(False)
+        if selected:
+            self._select_country(selected)
+
+    @Slot(int)
+    def _country_changed(self, _index: int) -> None:
+        selected = self._selected_country_code()
+        locked = self.items[0].country_code if self.items else ""
+        if locked and selected != locked:
+            QMessageBox.warning(
+                self,
+                "작업 국가 변경 불가",
+                "현재 박스에 구성품이 있습니다. 박스를 확정하거나 현재 입력을 초기화한 후 국가를 변경하세요.",
+            )
+            self.country_combo.blockSignals(True)
+            self._select_country(locked)
+            self.country_combo.blockSignals(False)
+            return
+        if self.current_product and selected != self.current_product.normalized_country_code:
+            self._clear_scan(keep_message=True)
+        if selected:
+            self.next_action.setText(f"다음 행동: {self.country_combo.currentText()} 상품의 FNSKU를 스캔하세요.")
+            self.fnsku_input.setFocus()
+        else:
+            self.next_action.setText("다음 행동: 작업 국가를 먼저 선택하세요.")
+        self._save_draft()
+
     @Slot()
     def sync_now(self) -> None:
         if self.sync_thread and self.sync_thread.isRunning():
@@ -383,7 +437,8 @@ class MainWindow(QMainWindow):
             f"{result.message} · DB {result.cache.data_version or '-'} · {result.cache.product_count:,}개",
         )
         if result.state == "CURRENT":
-            self._success("상품정보 업데이트 완료. FNSKU를 스캔하세요.")
+            self._refresh_country_options()
+            self._success("상품정보 업데이트 완료. 작업 국가를 선택하고 FNSKU를 스캔하세요.")
         else:
             self._error(result.message, beep=False)
         self.fnsku_input.setFocus()
@@ -411,8 +466,13 @@ class MainWindow(QMainWindow):
                 "상품DB가 없거나 허용된 사용기간을 초과했습니다. 상품정보를 업데이트하세요. [BP-CACHE-001]"
             )
             return
+        country_code = self._selected_country_code()
+        if not country_code:
+            self._error("먼저 작업 국가를 선택하세요. [BP-LOOKUP-003]")
+            self.country_combo.setFocus()
+            return
         try:
-            product = self.cache.lookup(self.fnsku_input.text())
+            product = self.cache.lookup(self.fnsku_input.text(), country_code)
         except BeyondPackError as exc:
             self.current_product = None
             self._clear_product_fields()
@@ -435,7 +495,15 @@ class MainWindow(QMainWindow):
             self.fnsku_input.setFocus()
             return
         qty = self.qty_input.value()
-        existing = next((index for index, item in enumerate(self.items) if item.fnsku == self.current_product.normalized_fnsku), None)
+        existing = next(
+            (
+                index
+                for index, item in enumerate(self.items)
+                if (item.fnsku, item.country_code)
+                == (self.current_product.normalized_fnsku, self.current_product.normalized_country_code)
+            ),
+            None,
+        )
         if existing is not None:
             answer = QMessageBox.question(
                 self,
@@ -581,6 +649,7 @@ class MainWindow(QMainWindow):
             "length": self.length.value(),
             "width": self.width.value(),
             "height": self.height.value(),
+            "selected_country_code": self._selected_country_code(),
         }
         if self.items or any(payload[key] for key in ("weight", "length", "width", "height")):
             self.packaging.save_draft(self.DRAFT_KEY, payload)
@@ -598,7 +667,10 @@ class MainWindow(QMainWindow):
             self.packaging.clear_draft(self.DRAFT_KEY)
             return
         try:
+            self._select_country(str(draft.get("selected_country_code", "")))
             self.items = [BoxItem(**item) for item in draft.get("items", [])]
+            if self.items:
+                self._select_country(self.items[0].country_code)
             self.box_count.setValue(int(draft.get("box_count", 1)))
             self.weight.setValue(float(draft.get("weight", 0)))
             self.length.setValue(float(draft.get("length", 0)))
@@ -642,8 +714,9 @@ class MainWindow(QMainWindow):
         QLabel#subtitle { color: #667085; }
         QGroupBox { background: white; border: 1px solid #DDD8CE; border-radius: 9px; margin-top: 13px; padding: 13px; font-weight: 700; }
         QGroupBox::title { subcontrol-origin: margin; left: 13px; padding: 0 5px; }
-        QLineEdit, QSpinBox, QDoubleSpinBox { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 7px; font-size: 16px; }
-        QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #2563EB; }
+        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 7px; font-size: 16px; }
+        QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 2px solid #2563EB; }
+        QComboBox#countrySelector { background: #FFF7E6; border: 2px solid #D97706; font-weight: 800; }
         QLineEdit#readonlyField { background: #F1F4F8; color: #0B1F3A; font-weight: 650; }
         QLabel#fieldCaption { color: #667085; font-size: 12px; }
         QPushButton { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 9px 13px; font-weight: 650; }

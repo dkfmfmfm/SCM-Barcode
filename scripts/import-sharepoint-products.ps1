@@ -26,6 +26,12 @@ function Normalize-Fnsku {
     return (($Value.ToString() -replace "\s", "").Trim().ToUpperInvariant())
 }
 
+function Normalize-CountryCode {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value) { return "" }
+    return (($Value.ToString() -replace "\s", "").Trim().ToUpperInvariant())
+}
+
 function Required-Text {
     param(
         [object]$Row,
@@ -63,10 +69,6 @@ for ($index = 0; $index -lt $rawRows.Count; $index++) {
     if ([string]::IsNullOrWhiteSpace($fnsku)) {
         throw "CSV $rowNumber 행의 FNSKU가 비어 있습니다."
     }
-    if (-not $seen.Add($fnsku)) {
-        throw "CSV에 중복 FNSKU가 있습니다: $fnsku"
-    }
-
     $statusValue = if ($null -eq $row.PSObject.Properties["Status"] -or [string]::IsNullOrWhiteSpace($row.Status)) {
         "Published"
     } else {
@@ -78,8 +80,8 @@ for ($index = 0; $index -lt $rawRows.Count; $index++) {
 
     $schemaText = Required-Text $row "SchemaVersion" $rowNumber
     $schema = 0
-    if (-not [int]::TryParse($schemaText, [ref]$schema) -or $schema -ne 1) {
-        throw "CSV $rowNumber 행의 SchemaVersion은 1이어야 합니다."
+    if (-not [int]::TryParse($schemaText, [ref]$schema) -or $schema -ne 2) {
+        throw "CSV $rowNumber 행의 SchemaVersion은 2여야 합니다."
     }
 
     $rowVersion = if ([string]::IsNullOrWhiteSpace($DataVersion)) {
@@ -108,6 +110,19 @@ for ($index = 0; $index -lt $rawRows.Count; $index++) {
         $productName = [string]$row.ProductName
     }
 
+    $countryCode = Normalize-CountryCode $countryCode
+    if ([string]::IsNullOrWhiteSpace($countryCode)) {
+        throw "CSV $rowNumber 행의 CountryCode가 비어 있습니다."
+    }
+    $lookupKey = "$fnsku|$countryCode"
+    $providedLookupKey = Required-Text $row "LookupKey" $rowNumber
+    if ($providedLookupKey.Trim().ToUpperInvariant() -ne $lookupKey) {
+        throw "CSV $rowNumber 행의 LookupKey가 계산값과 다릅니다. 필요: $lookupKey"
+    }
+    if (-not $seen.Add($lookupKey)) {
+        throw "CSV에 중복 FNSKU+국가가 있습니다: $lookupKey"
+    }
+
     $sourceModifiedAt = Required-Text $row "SourceModifiedAt" $rowNumber
     $parsedDate = [datetimeoffset]::MinValue
     if (-not [datetimeoffset]::TryParse($sourceModifiedAt, [ref]$parsedDate)) {
@@ -118,7 +133,7 @@ for ($index = 0; $index -lt $rawRows.Count; $index++) {
         FNSKU            = $fnsku
         ItemCode         = $itemCode.Trim()
         SKU              = $sku.Trim()
-        CountryCode      = $countryCode.Trim().ToUpperInvariant()
+        CountryCode      = $countryCode
         CountryName      = $countryName.Trim()
         ProductName      = $productName.Trim()
         ProductNameEn    = ([string]$row.ProductNameEn).Trim()
@@ -126,7 +141,8 @@ for ($index = 0; $index -lt $rawRows.Count; $index++) {
         Status           = $statusValue
         SourceModifiedAt = $parsedDate.UtcDateTime.ToString("o")
         DataVersion      = $rowVersion
-        SchemaVersion    = 1
+        SchemaVersion    = 2
+        LookupKey        = $lookupKey
     })
 }
 
@@ -143,15 +159,15 @@ if (-not $Apply) {
 Import-Module PnP.PowerShell
 Connect-PnPOnline -Url $SiteUrl -Interactive -ClientId $ClientId
 
-$existingByFnsku = @{}
-$existingItems = @(Get-PnPListItem -List $ListName -PageSize 2000 -Fields "FNSKU", "Status")
+$existingByLookupKey = @{}
+$existingItems = @(Get-PnPListItem -List $ListName -PageSize 2000 -Fields "LookupKey", "Status")
 foreach ($item in $existingItems) {
-    $key = Normalize-Fnsku $item["FNSKU"]
+    $key = ([string]$item["LookupKey"]).Trim().ToUpperInvariant()
     if ([string]::IsNullOrWhiteSpace($key)) { continue }
-    if ($existingByFnsku.ContainsKey($key)) {
-        throw "SharePoint List에 중복 FNSKU가 있습니다: $key"
+    if ($existingByLookupKey.ContainsKey($key)) {
+        throw "SharePoint List에 중복 LookupKey가 있습니다: $key"
     }
-    $existingByFnsku[$key] = $item.Id
+    $existingByLookupKey[$key] = $item.Id
 }
 
 $created = 0
@@ -161,11 +177,12 @@ $queued = 0
 
 foreach ($row in $normalizedRows) {
     $values = @{
-        "Title"            = $row.FNSKU
+        "Title"            = $row.LookupKey
         "FNSKU"            = $row.FNSKU
         "ItemCode"         = $row.ItemCode
         "SKU"              = $row.SKU
         "CountryCode"      = $row.CountryCode
+        "LookupKey"        = $row.LookupKey
         "CountryName"      = $row.CountryName
         "ProductName"      = $row.ProductName
         "ProductNameEn"    = $row.ProductNameEn
@@ -175,8 +192,8 @@ foreach ($row in $normalizedRows) {
         "DataVersion"      = $row.DataVersion
         "SchemaVersion"    = $row.SchemaVersion
     }
-    if ($existingByFnsku.ContainsKey($row.FNSKU)) {
-        Set-PnPListItem -List $ListName -Identity $existingByFnsku[$row.FNSKU] -Values $values -Batch $batch | Out-Null
+    if ($existingByLookupKey.ContainsKey($row.LookupKey)) {
+        Set-PnPListItem -List $ListName -Identity $existingByLookupKey[$row.LookupKey] -Values $values -Batch $batch | Out-Null
         $updated++
     } else {
         Add-PnPListItem -List $ListName -Values $values -Batch $batch | Out-Null
@@ -197,11 +214,11 @@ if ($queued -gt 0) {
 $deactivated = 0
 if ($DeactivateMissing) {
     $incoming = [System.Collections.Generic.HashSet[string]]::new($seen, [System.StringComparer]::OrdinalIgnoreCase)
-    $missingKeys = @($existingByFnsku.Keys | Where-Object { -not $incoming.Contains($_) })
+    $missingKeys = @($existingByLookupKey.Keys | Where-Object { -not $incoming.Contains($_) })
     $batch = New-PnPBatch
     $queued = 0
     foreach ($key in $missingKeys) {
-        Set-PnPListItem -List $ListName -Identity $existingByFnsku[$key] -Values @{ "Status" = "Inactive" } -Batch $batch | Out-Null
+        Set-PnPListItem -List $ListName -Identity $existingByLookupKey[$key] -Values @{ "Status" = "Inactive" } -Batch $batch | Out-Null
         $deactivated++
         $queued++
         if ($queued -ge $BatchSize) {

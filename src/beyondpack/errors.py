@@ -20,8 +20,12 @@ class DataValidationError(BeyondPackError):
     code = "BP-DATA-001"
 
 
-class DuplicateFnskuError(DataValidationError):
+class DuplicateProductKeyError(DataValidationError):
     code = "BP-DATA-002"
+
+
+# Backward-compatible import name used by older integrations.
+DuplicateFnskuError = DuplicateProductKeyError
 
 
 class ProductNotFoundError(BeyondPackError):
@@ -32,6 +36,9 @@ class InactiveProductError(BeyondPackError):
     code = "BP-LOOKUP-002"
 
 
+class CountrySelectionRequiredError(BeyondPackError):
+    code = "BP-LOOKUP-003"
+
+
 class PackagingValidationError(BeyondPackError):
     code = "BP-PACK-001"
-

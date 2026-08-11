@@ -9,6 +9,7 @@ def render_group_label(group: dict, items: list[dict], box_number: int) -> str:
         f"<td>{html.escape(str(item['fnsku']))}</td>"
         f"<td>{html.escape(str(item['item_code']))}</td>"
         f"<td>{html.escape(str(item['sku']))}</td>"
+        f"<td>{html.escape(str(item['country_name']))} ({html.escape(str(item['country_code']))})</td>"
         f"<td>{int(item['qty_per_box'])}</td>"
         "</tr>"
         for item in items
@@ -26,8 +27,7 @@ def render_group_label(group: dict, items: list[dict], box_number: int) -> str:
       <div class="meta">
         {group['weight_kg']} kg · {group['length_cm']} × {group['width_cm']} × {group['height_cm']} cm
       </div>
-      <table><thead><tr><th>FNSKU</th><th>품목코드</th><th>SKU</th><th>EA</th></tr></thead>
+      <table><thead><tr><th>FNSKU</th><th>품목코드</th><th>SKU</th><th>국가</th><th>EA</th></tr></thead>
       <tbody>{item_rows}</tbody></table>
     </body></html>
     """
-

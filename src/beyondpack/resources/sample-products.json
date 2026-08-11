@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "data_version": "DEMO-2026.08.11",
   "products": [
     {
@@ -14,7 +14,8 @@
       "Status": "Published",
       "SourceModifiedAt": "2026-08-11T00:00:00Z",
       "DataVersion": "DEMO-2026.08.11",
-      "SchemaVersion": 1
+      "SchemaVersion": 2,
+      "LookupKey": "X003ABC123|US"
     },
     {
       "FNSKU": "X004DEF456",
@@ -28,8 +29,8 @@
       "Status": "Published",
       "SourceModifiedAt": "2026-08-11T00:00:00Z",
       "DataVersion": "DEMO-2026.08.11",
-      "SchemaVersion": 1
+      "SchemaVersion": 2,
+      "LookupKey": "X004DEF456|US"
     }
   ]
 }
-

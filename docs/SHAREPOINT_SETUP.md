@@ -42,10 +42,11 @@ pwsh .\scripts\create-sharepoint-list.ps1 `
 
 | 생성할 내부명 | 권장 표시명 | 형식 | 필수 | 설정 |
 |---|---|---|:---:|---|
-| `FNSKU` | FNSKU | 한 줄 텍스트 | Y | 고유값 적용, 인덱스 |
+| `FNSKU` | FNSKU | 한 줄 텍스트 | Y | 중복 허용, 인덱스 |
 | `ItemCode` | 품목코드 | 한 줄 텍스트 | Y |  |
 | `SKU` | SKU | 한 줄 텍스트 | Y |  |
 | `CountryCode` | 국가코드 | 한 줄 텍스트 | Y | US/JP/DE 등 |
+| `LookupKey` | 조회키 | 한 줄 텍스트 | Y | `FNSKU|CountryCode`, 고유값 적용 |
 | `CountryName` | 국가명 | 한 줄 텍스트 | Y | 미국/일본/독일 등 |
 | `ProductName` | 품목명 | 한 줄 텍스트 | Y |  |
 | `ProductNameEn` | 영문 품목명 | 한 줄 텍스트 | N |  |
@@ -53,13 +54,14 @@ pwsh .\scripts\create-sharepoint-list.ps1 `
 | `Status` | 상태 | 선택 | Y | `Published`, `Inactive` |
 | `SourceModifiedAt` | 원본 수정시각 | 날짜 및 시간 | Y | 날짜+시간 표시 |
 | `DataVersion` | 데이터 버전 | 한 줄 텍스트 | Y | 한 배포 내 동일값 |
-| `SchemaVersion` | 스키마 버전 | 숫자 | Y | 소수 0자리, 현재 `1` |
+| `SchemaVersion` | 스키마 버전 | 숫자 | Y | 소수 0자리, 현재 `2` |
 
-6. `FNSKU` 열 설정에서 `고유 값 적용`을 켠다. 이 설정은 중복을 차단하며 인덱스도 만든다.
-7. 목록 설정의 `인덱싱된 열`에서 `Status`, `DataVersion`, `SourceModifiedAt`을 추가한다.
-8. `버전 관리 설정`에서 항목을 수정할 때마다 버전을 생성하도록 한다.
-9. 기본 보기에는 FNSKU·품목코드·SKU·국가명·품목명·상태·데이터버전만 표시한다.
-10. `Published 상품` 보기를 추가하고 `Status = Published` 필터를 적용한다.
+6. `FNSKU` 열은 `고유 값 적용: 아니요`, `인덱스: 예`로 설정한다.
+7. `LookupKey` 열은 **계산 열이 아닌 한 줄 텍스트**로 만들고 `고유 값 적용: 예`로 설정한다.
+8. 목록 설정의 `인덱싱된 열`에서 `CountryCode`, `Status`, `DataVersion`, `SourceModifiedAt`을 추가한다.
+9. `버전 관리 설정`에서 항목을 수정할 때마다 버전을 생성하도록 한다.
+10. 기본 보기에는 FNSKU·국가코드·LookupKey·품목코드·SKU·국가명·품목명·상태·데이터버전을 표시한다.
+11. `Published 상품` 보기를 추가하고 `Status = Published` 필터를 적용한다.
 
 ## 3. 권한
 
@@ -77,14 +79,16 @@ pwsh .\scripts\create-sharepoint-list.ps1 `
 CSV 첫 줄은 아래 내부명과 정확히 일치해야 한다.
 
 ```csv
-FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
-X003ABC123,A000000120,US-AMZ-SEAWEED-12P,US,미국,DONGWON YANGBAN SEAWEED 12 PACK,DONGWON YANGBAN SEAWEED 12 PACK,US-01,Published,2026-08-11T00:00:00Z,2026.08.11.01,1
+FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion,LookupKey
+X003ABC123,A000000120,US-AMZ-SEAWEED-12P,US,미국,DONGWON YANGBAN SEAWEED 12 PACK,DONGWON YANGBAN SEAWEED 12 PACK,US-01,Published,2026-08-11T00:00:00Z,2026.08.11.02,2,X003ABC123|US
 ```
 
 필수 규칙:
 
 - FNSKU는 공백을 제거하고 대문자로 통일한다.
-- CSV 안의 FNSKU 중복은 0건이어야 한다.
+- 동일 FNSKU가 국가별로 반복되는 것은 허용한다.
+- CSV 안의 `FNSKU|CountryCode` 복합키 중복은 0건이어야 한다.
+- `LookupKey`는 정규화된 `FNSKU|CountryCode`와 정확히 같아야 한다.
 - `Published` 행은 ItemCode, SKU, CountryCode, CountryName, ProductName이 모두 있어야 한다.
 - 한 번의 배포에는 DataVersion 하나만 사용한다.
 - SourceModifiedAt은 ISO 8601 날짜·시간으로 넣는다.
@@ -111,9 +115,9 @@ Microsoft Lists는 Excel 표 또는 CSV에서 새 목록을 만들 수 있다. �
 
 수천~수만 건의 최초 등록, 정기 전체 배포, 기존 행 수정에 적합하다. 저장소의 `scripts/import-sharepoint-products.ps1`는 다음을 수행한다.
 
-- 업로드 전 필수값·FNSKU 중복·스키마·데이터버전 전체 검증
+- 업로드 전 필수값·복합키 중복·스키마·데이터버전 전체 검증
 - 기본 실행은 SharePoint를 바꾸지 않는 dry run
-- FNSKU가 있으면 수정, 없으면 신규 등록
+- LookupKey가 있으면 수정, 없으면 신규 등록
 - 100건 단위 기본 배치 처리
 - 선택적으로 CSV에서 사라진 기존 상품을 `Inactive`로 변경
 
@@ -153,17 +157,17 @@ CSV에 없는 기존 상품까지 비활성화할 때만 명시적으로 추가�
 ## 6. 업로드 후 검증
 
 1. SharePoint 총 행 수와 원본 게시 건수가 일치한다.
-2. FNSKU 고유값 위반이 없다.
+2. LookupKey 고유값 위반이 없다.
 3. `Published` 필수값 누락이 0건이다.
 4. DataVersion이 한 개다.
 5. BeyondPack에서 `상품정보 업데이트`를 실행한다.
-6. 정상 FNSKU 10건, 소문자·공백 FNSKU, 미등록·비활성 FNSKU를 시험한다.
+6. 정상 FNSKU 10건, 같은 FNSKU의 국가별 상품, 소문자·공백 FNSKU, 미등록·비활성 FNSKU를 시험한다.
 7. 상품DB 버전·건수·마지막 성공시간을 기록한다.
 8. 문제가 있으면 SharePoint 데이터를 수정하고 새 DataVersion으로 다시 배포한다.
 
 ## 7. 운영 원칙
 
-- 전체 삭제 후 재등록하지 않고 FNSKU 기준 업서트를 사용한다.
+- 전체 삭제 후 재등록하지 않고 LookupKey 기준 업서트를 사용한다.
 - 데이터가 20% 이상 줄면 BeyondPack 적용이 거부되므로 원인을 먼저 확인한다.
 - 품목관리 시스템과 SharePoint 양쪽에서 핵심 상품 필드를 수정하지 않는다.
 - 포장 작업 시작 직전에 대규모 배포하지 않는다.
