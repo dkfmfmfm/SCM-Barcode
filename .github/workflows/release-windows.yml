@@ -1,6 +1,15 @@
 name: Build and release Windows app
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-windows.yml"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - "beyondpack_entry.py"
+      - "src/**"
+      - "scripts/build-windows.ps1"
+      - "docs/RELEASE_*.md"
   push:
     branches:
       - main
@@ -11,7 +20,7 @@ on:
       - "beyondpack_entry.py"
       - "src/**"
       - "scripts/build-windows.ps1"
-      - "docs/RELEASE_2.1.0.md"
+      - "docs/RELEASE_*.md"
   workflow_dispatch:
 
 permissions:
@@ -42,8 +51,8 @@ jobs:
         shell: pwsh
         run: |
           $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-          if ($version -ne "2.1.0") {
-            throw "This release workflow expects version 2.1.0, found $version"
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Invalid semantic version: $version"
           }
           "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -56,16 +65,20 @@ jobs:
         shell: pwsh
         run: .\scripts\build-windows.ps1 -OneFile
 
-      - name: Smoke-test executable
+      - name: GUI startup self-test
         shell: pwsh
         run: |
           $process = Start-Process `
             -FilePath ".\dist\onefile\BeyondPack.exe" `
-            -ArgumentList "--help" `
+            -ArgumentList "--self-test" `
             -Wait `
             -PassThru
           if ($process.ExitCode -ne 0) {
-            throw "Executable smoke test failed. Exit=$($process.ExitCode)"
+            $logPath = Join-Path $env:LOCALAPPDATA "BeyondPack\logs\startup.log"
+            if (Test-Path -LiteralPath $logPath) {
+              Get-Content -LiteralPath $logPath | Write-Host
+            }
+            throw "Executable GUI startup self-test failed. Exit=$($process.ExitCode)"
           }
 
       - name: Package release assets
@@ -104,10 +117,15 @@ jobs:
           retention-days: 30
 
       - name: Create or update GitHub pre-release
+        if: github.event_name != 'pull_request'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $notesFile = ".\docs\RELEASE_$env:RELEASE_VERSION.md"
+          if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) {
+            throw "Release notes not found: $notesFile"
+          }
           $assets = @(
             ".\release\BeyondPack-$env:RELEASE_VERSION-Windows-x64.exe",
             ".\release\BeyondPack-$env:RELEASE_VERSION-Windows-x64-portable.zip",
@@ -120,7 +138,7 @@ jobs:
             gh release create $env:RELEASE_TAG @assets `
               --target $env:GITHUB_SHA `
               --title "BeyondPack $env:RELEASE_VERSION" `
-              --notes-file ".\docs\RELEASE_2.1.0.md" `
+              --notes-file $notesFile `
               --prerelease `
               --repo $env:GITHUB_REPOSITORY
           }
