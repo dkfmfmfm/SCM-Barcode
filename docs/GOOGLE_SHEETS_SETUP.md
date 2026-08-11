@@ -5,18 +5,18 @@
 기존 `product` 탭은 BeyondPack 1.4 호환을 위해 유지하고, 새 탭 이름을 `BeyondPack_Master`로 만든다. 첫 행에 다음 열을 정확히 입력한다.
 
 ```text
-FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
+FNSKU,ItemCode,SKU,CountryCode,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
 ```
 
 동일 FNSKU가 국가별로 존재하면 국가마다 한 행을 사용한다.
 
 ```text
-X001ABC123 | US | 미국
-X001ABC123 | CA | 캐나다
-X001ABC123 | JP | 일본
+X001ABC123 | US
+X001ABC123 | CA
+X001ABC123 | JP
 ```
 
-동일한 `FNSKU+CountryCode` 조합은 두 번 등록할 수 없다. `SchemaVersion`은 현재 `2`다. `DataVersion`을 비우면 프로그램이 CSV 내용으로 자동 버전을 생성한다.
+동일한 `FNSKU+CountryCode` 조합은 두 번 등록할 수 없다. 화면의 국가는 `CountryCode`를 사용하므로 `CountryName` 열은 만들지 않는다. 기존 파일에 해당 열이 있어도 프로그램은 호환해서 읽는다. `SchemaVersion`은 현재 `2`다. `DataVersion`을 비우면 프로그램이 CSV 내용으로 자동 버전을 생성한다.
 
 ## 2. 접근 설정
 
