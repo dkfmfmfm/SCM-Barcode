@@ -8,6 +8,10 @@
   "scanner_terminator": "enter",
   "weight_max_kg": 1000.0,
   "dimension_max_cm": 500.0,
-  "sharepoint": {}
+  "google_sheets": {
+    "spreadsheet_url": "",
+    "gid": "",
+    "timeout_seconds": 10,
+    "max_download_bytes": 20000000
+  }
 }
-
