@@ -15,12 +15,12 @@ from beyondpack.sources.google_sheets import (
 
 
 HEADERS = (
-    "FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,"
+    "FNSKU,ItemCode,SKU,CountryCode,ProductName,ProductNameEn,"
     "AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion\n"
 )
 ROWS = (
-    "X1,A1,SKU-US,US,미국,상품,,ACCOUNT,Published,,V1,2\n"
-    "X1,A1,SKU-DE,DE,독일,상품,,ACCOUNT,Published,,V1,2\n"
+    "X1,A1,SKU-US,US,상품,,ACCOUNT,Published,,V1,2\n"
+    "X1,A1,SKU-DE,DE,상품,,ACCOUNT,Published,,V1,2\n"
 )
 
 
@@ -63,6 +63,7 @@ class GoogleSheetsSourceTests(unittest.TestCase):
         self.assertEqual(len(batch.products), 2)
         self.assertEqual(batch.products[0].lookup_key, "X1|US")
         self.assertEqual(batch.products[1].lookup_key, "X1|DE")
+        self.assertEqual(batch.products[0].country_name, "US")
 
     def test_legacy_two_column_sheet_is_rejected(self):
         payload = "X1,상품명\nX2,다른상품\n".encode("utf-8")

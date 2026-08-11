@@ -54,7 +54,7 @@ Windows가 게시자를 확인할 수 없다고 표시할 수 있다. 현재 배
 
 ### 3.2 작업 영역
 
-- `1. 상품 스캔`: FNSKU를 스캔하고 품목명, 품목코드, SKU, FNSKU, 국가명을 확인한다.
+- `1. 상품 스캔`: FNSKU를 스캔하고 품목명, 품목코드, SKU, FNSKU, 국가를 확인한다.
 - `2. 박스 구성품`: 한 박스에 들어갈 단품 또는 합포 상품과 박스당 수량을 보여준다.
 - `3. 포장정보 입력`: 박스수량, 박스당 무게, 가로, 세로, 높이를 작업자가 입력한다.
 - `다음 행동`: 현재 단계에서 해야 할 작업 또는 오류 해결 방향을 표시한다.
@@ -83,7 +83,7 @@ Windows가 게시자를 확인할 수 없다고 표시할 수 있다. 현재 배
 ### 4.2 단품 박스 등록
 
 1. FNSKU 입력칸에 포커스가 있는지 확인하고 바코드를 스캔한다. 스캐너가 Enter를 보내면 자동 조회된다.
-2. 표시된 `품목명·품목코드·SKU·FNSKU·국가명`이 실물과 일치하는지 확인한다.
+2. 표시된 `품목명·품목코드·SKU·FNSKU·국가`가 실물과 일치하는지 확인한다.
 3. `박스당 상품수량`에 한 박스에 들어가는 EA 수량을 입력한다.
 4. `합포 구성에 추가`를 누른다. 단품도 반드시 구성품에 추가해야 한다.
 5. `박스수량`에 동일한 구성과 포장규격으로 만들 박스 수를 입력한다.
@@ -173,20 +173,20 @@ Excel에는 포장 작업, 박스 그룹, 구성품, 작업 당시의 상품정�
 `BeyondPack_Master` 탭 첫 행에 다음 내부 열 이름을 사용한다.
 
 ```text
-FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
+FNSKU,ItemCode,SKU,CountryCode,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
 ```
 
-필수값은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `CountryName`, `ProductName`이다. `SchemaVersion`은 현재 `2`를 사용한다. 활성 상품의 `Status`는 `Published`, `Active`, `Y` 중 하나를 사용한다.
+필수값은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `ProductName`이다. 화면의 국가는 `CountryCode`를 사용한다. 기존 파일의 `CountryName` 열은 있어도 읽지만 신규 Google Sheet에는 만들지 않는다. `SchemaVersion`은 현재 `2`를 사용한다. 활성 상품의 `Status`는 `Published`, `Active`, `Y` 중 하나를 사용한다.
 
 ### 9.2 국가별 FNSKU 등록
 
 FNSKU가 같아도 국가가 다르면 국가별로 한 행씩 등록한다.
 
 ```text
-FNSKU       CountryCode  CountryName
-X001ABC123  US           미국
-X001ABC123  CA           캐나다
-X001ABC123  JP           일본
+FNSKU       CountryCode
+X001ABC123  US
+X001ABC123  CA
+X001ABC123  JP
 ```
 
 동일한 `FNSKU+CountryCode` 조합은 중복 등록할 수 없다. 프로그램은 이 조합을 내부 조회키로 사용한다.

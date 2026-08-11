@@ -4,12 +4,17 @@ import html
 
 
 def render_group_label(group: dict, items: list[dict], box_number: int) -> str:
+    def country_label(item: dict) -> str:
+        code = str(item["country_code"])
+        name = str(item.get("country_name") or code)
+        return code if name.upper() == code.upper() else f"{name} ({code})"
+
     item_rows = "".join(
         "<tr>"
         f"<td>{html.escape(str(item['fnsku']))}</td>"
         f"<td>{html.escape(str(item['item_code']))}</td>"
         f"<td>{html.escape(str(item['sku']))}</td>"
-        f"<td>{html.escape(str(item['country_name']))} ({html.escape(str(item['country_code']))})</td>"
+        f"<td>{html.escape(country_label(item))}</td>"
         f"<td>{int(item['qty_per_box'])}</td>"
         "</tr>"
         for item in items

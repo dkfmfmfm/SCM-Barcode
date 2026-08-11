@@ -5,6 +5,7 @@
 - Google Sheet CSV 시작 자동 다운로드와 F2 수동 갱신
 - 검증 후 로컬 SQLite 원자 교체, 실패 시 기존 DB 유지
 - 동일 FNSKU의 국가별 조회와 `FNSKU+CountryCode` 중복 차단
+- Google Sheet의 `CountryName` 열 제거 지원, `CountryCode`를 화면 국가로 사용
 - Excel 상품 마스터 비상 업데이트
 - 오래된 캐시 경고 중에도 검증된 로컬 DB로 작업 가능
 - SharePoint/MSAL 실행 의존 제거와 기존 설정 자동 마이그레이션

@@ -14,7 +14,7 @@
 ## 주요 기능
 
 - 동일 FNSKU의 국가별 상품 허용, 동일 `FNSKU+국가` 중복 차단
-- 품목명·품목코드·SKU·FNSKU·국가명 읽기 전용 표시
+- 품목명·품목코드·SKU·FNSKU·국가 읽기 전용 표시
 - 한 박스에 여러 FNSKU와 수량을 담는 합포
 - 상품 수 20% 이상 급감, 필수값 누락, 스키마 불일치 시 전체 업데이트 차단
 - `products.new.db` 검증 후 원자 교체, 직전 DB 자동 백업
@@ -34,7 +34,6 @@ FNSKU
 ItemCode
 SKU
 CountryCode
-CountryName
 ProductName
 ProductNameEn
 AmazonAccount
@@ -44,7 +43,7 @@ DataVersion
 SchemaVersion
 ```
 
-필수 열은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `CountryName`, `ProductName`이다. 활성 상태는 `Published`, `Active`, `Y`를 사용할 수 있다.
+필수 열은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `ProductName`이다. `CountryName`은 이전 파일 호환용 선택 열이며, 없으면 `CountryCode`가 화면의 국가로 표시된다. 활성 상태는 `Published`, `Active`, `Y`를 사용할 수 있다.
 
 ## 최초 설정
 

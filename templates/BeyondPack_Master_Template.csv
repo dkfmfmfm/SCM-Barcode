@@ -1,1 +1,1 @@
-FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
+FNSKU,ItemCode,SKU,CountryCode,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion

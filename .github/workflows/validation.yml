@@ -26,7 +26,7 @@ jobs:
           grep -Fq "Google Sheet" PLAN.MD
           grep -Fq "FNSKU" PLAN.MD
           grep -Fq "품목코드" PLAN.MD
-          grep -Fq "국가명" PLAN.MD
+          grep -Fq "CountryCode" PLAN.MD
           grep -Fq "오프라인" PLAN.MD
           grep -Fq "포장" PLAN.MD
           grep -Fq "PLAN.MD" RESEARCH.MD

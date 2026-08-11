@@ -22,6 +22,22 @@ class MappingTests(unittest.TestCase):
         )
         self.assertEqual(product.computed_lookup_key, "X1|DE")
         self.assertEqual(product.lookup_key, "X1|DE")
+        self.assertEqual(product.country_name, "독일")
+
+    def test_country_code_is_display_value_when_country_name_is_absent(self):
+        product = map_product(
+            {
+                "FNSKU": "X1",
+                "ItemCode": "A1",
+                "SKU": "SKU1",
+                "CountryCode": "de",
+                "ProductName": "상품",
+            },
+            "V2",
+            2,
+        )
+        self.assertEqual(product.country_code, "DE")
+        self.assertEqual(product.country_name, "DE")
 
 
 if __name__ == "__main__":
