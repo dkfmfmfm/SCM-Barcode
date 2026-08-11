@@ -22,11 +22,12 @@ class ExcelProductSource(ProductSource):
         except (OSError, ValueError) as exc:
             raise SourceError(f"Excel 파일을 읽을 수 없습니다: {self.path.name}") from exc
         try:
-            sheet = (
-                workbook["BeyondPack_Master"]
-                if "BeyondPack_Master" in workbook.sheetnames
-                else workbook.active
-            )
+            if "BeyondPack" in workbook.sheetnames:
+                sheet = workbook["BeyondPack"]
+            elif "BeyondPack_Master" in workbook.sheetnames:
+                sheet = workbook["BeyondPack_Master"]
+            else:
+                sheet = workbook.active
             iterator = sheet.iter_rows(values_only=True)
             try:
                 headers = [str(value or "").strip().lstrip("\ufeff") for value in next(iterator)]

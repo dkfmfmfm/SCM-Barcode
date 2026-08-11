@@ -38,7 +38,7 @@ def rows_to_batch(
     if missing_headers:
         raise SourceError(
             f"{source_name} 필수 열이 없습니다: {', '.join(missing_headers)}. "
-            "첫 행에 BeyondPack_Master 열 제목을 넣으세요."
+            "BeyondPack 시트 첫 행에 열 제목을 넣으세요."
         )
 
     versions = {

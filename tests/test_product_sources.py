@@ -86,7 +86,7 @@ class ExcelSourceTests(unittest.TestCase):
             path = Path(temp_dir) / "master.xlsx"
             workbook = Workbook()
             sheet = workbook.active
-            sheet.title = "BeyondPack_Master"
+            sheet.title = "BeyondPack"
             headers = (HEADERS.strip()).split(",")
             sheet.append(headers)
             sheet.append(ROWS.splitlines()[0].split(","))

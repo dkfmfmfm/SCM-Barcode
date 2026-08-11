@@ -2,7 +2,7 @@
 
 ## 1. 시트 구성
 
-기존 `product` 탭은 BeyondPack 1.4 호환을 위해 유지하고, 새 탭 이름을 `BeyondPack_Master`로 만든다. 첫 행에 다음 열을 정확히 입력한다.
+참조할 탭 이름은 `BeyondPack`이다. 기존 `product` 탭은 BeyondPack 1.4 호환이 필요하면 유지한다. `BeyondPack` 탭 첫 행에 다음 열을 정확히 입력한다.
 
 ```text
 FNSKU,ItemCode,SKU,CountryCode,ProductName,ProductNameEn,AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion
@@ -26,7 +26,7 @@ BeyondPack은 브라우저 화면이나 Google API를 사용하지 않고 해당
 
 ## 3. BeyondPack 연결
 
-1. `BeyondPack_Master` 탭을 연다.
+1. `BeyondPack` 탭을 연다.
 2. 주소창의 전체 Google Sheet URL을 복사한다.
 3. BeyondPack 상단 `Sheet 설정`을 누른다.
 4. URL을 붙여넣고 확인한다.
@@ -36,4 +36,4 @@ BeyondPack은 브라우저 화면이나 Google API를 사용하지 않고 해당
 
 ## 4. Excel 비상 파일
 
-Google Sheet에서 `.xlsx`로 내려받거나 동일 열의 Excel을 준비한다. 시트 이름은 `BeyondPack_Master`를 권장한다. 현장에서는 `Excel 비상 업데이트`를 누르고 파일을 선택한다. 검증 실패 시 기존 DB는 변경되지 않는다.
+Google Sheet에서 `.xlsx`로 내려받거나 동일 열의 Excel을 준비한다. 시트 이름은 `BeyondPack`을 사용한다. 기존 `BeyondPack_Master`도 호환한다. 현장에서는 `Excel 비상 업데이트`를 누르고 파일을 선택한다. 검증 실패 시 기존 DB는 변경되지 않는다.

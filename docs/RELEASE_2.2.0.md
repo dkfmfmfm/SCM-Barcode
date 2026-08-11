@@ -14,7 +14,7 @@
 
 ## 권장 다운로드
 
-`BeyondPack-2.2.0-Windows-x64-Setup.exe`를 설치한다. 최초 실행 후 `Sheet 설정`에서 `BeyondPack_Master` 탭 주소를 한 번 붙여넣는다.
+`BeyondPack-2.2.0-Windows-x64-Setup.exe`를 설치한다. 최초 실행 후 `Sheet 설정`에서 `BeyondPack` 탭 주소를 한 번 붙여넣는다.
 
 포터블 ZIP과 단일 EXE도 제공하지만 일반 현장 PC에는 설치파일을 권장한다. 기존 `%LOCALAPPDATA%\BeyondPack\data`의 상품DB와 포장기록은 유지된다.
 
