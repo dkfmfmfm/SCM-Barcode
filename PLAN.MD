@@ -43,7 +43,7 @@ BeyondPack은 평상시 Google Sheet의 `BeyondPack_Master` 탭을 CSV로 자동
 - SQLite 새 DB 생성·무결성 검사·원자 교체
 - 직전 상품DB 한 세대 백업
 - 국가 선택과 `FNSKU+CountryCode` 조회
-- 품목명·품목코드·SKU·FNSKU·국가명 표시
+- 품목명·품목코드·SKU·FNSKU·국가 표시
 - 박스수량·무게·가로·세로·높이 직접 입력
 - 박스당 상품수량과 합포
 - 자동 임시저장, Excel 실적, 라벨·재출력
@@ -100,7 +100,7 @@ products.new.db ── 무결성 성공 ──► products.db
 | `ItemCode` | Y | 사내 품목코드 |
 | `SKU` | Y | 판매 SKU |
 | `CountryCode` | Y | US, CA, JP, UK, DE 등 |
-| `CountryName` | Y | 작업자 표시 국가명 |
+| `CountryName` | Y | 작업자 표시 국가 |
 | `ProductName` | Y | 한글 품목명 |
 | `ProductNameEn` | N | 영문 품목명 |
 | `AmazonAccount` | N | 판매계정 |
@@ -122,7 +122,7 @@ normalized(FNSKU) + "|" + uppercase(CountryCode)
 
 Google Sheet에서 가져오는 값:
 
-- 품목명, FNSKU, 품목코드, SKU, 국가명
+- 품목명, FNSKU, 품목코드, SKU, 국가
 
 작업자가 매 작업마다 입력하는 값:
 
@@ -188,7 +188,7 @@ Google Sheet에서 가져오는 값:
 2. 품목코드
 3. SKU
 4. FNSKU
-5. 국가명
+5. 국가
 
 ### 8.3 편의성 기준
 
@@ -355,7 +355,7 @@ BeyondPack-2.2.0-Windows-x64-Setup.exe
 1. 실행 시 CSV가 자동 다운로드되고 작업자는 파일을 저장하지 않는다.
 2. Google Sheet 오류가 기존 로컬 DB를 손상시키지 않는다.
 3. 동일 FNSKU가 국가별로 정확히 조회된다.
-4. 품목코드·SKU·국가명·품목명이 화면과 Excel에 일치한다.
+4. 품목코드·SKU·국가·품목명이 화면과 Excel에 일치한다.
 5. 신규 작업자가 30분 교육 후 단품과 합포를 처리한다.
 6. 네트워크 단절 중에도 검증된 캐시 상품을 포장한다.
 7. Excel 비상 업데이트 실패 시 기존 DB를 유지한다.
