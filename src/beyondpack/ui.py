@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -35,7 +36,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .cache import ProductCacheRepository
-from .config import AppConfig
+from .config import AppConfig, save_config
 from .diagnostics import create_diagnostic_bundle
 from .errors import BeyondPackError, PackagingValidationError
 from .exporter import export_job_xlsx
@@ -44,6 +45,8 @@ from .models import BoxGroupInput, BoxItem, Product
 from .normalization import positive_decimal, positive_int
 from .packaging import PackagingRepository
 from .sources.base import ProductSource
+from .sources.excel_source import ExcelProductSource
+from .sources.google_sheets import google_sheet_csv_url
 from .sync import ProductSyncService, SyncResult
 
 
@@ -156,9 +159,12 @@ class MainWindow(QMainWindow):
         self.operator_input.setPlaceholderText("이름 또는 사번")
         self.operator_input.setMaximumWidth(180)
         header.addWidget(self.operator_input)
-        self.update_button = QPushButton("F2  상품정보 업데이트")
+        self.update_button = QPushButton("F2  Google Sheet 업데이트")
         self.update_button.clicked.connect(self.sync_now)
         header.addWidget(self.update_button)
+        self.sheet_settings_button = QPushButton("Sheet 설정")
+        self.sheet_settings_button.clicked.connect(self.configure_google_sheet)
+        header.addWidget(self.sheet_settings_button)
         layout.addLayout(header)
 
         self.sync_banner = QFrame()
@@ -283,12 +289,15 @@ class MainWindow(QMainWindow):
         print_button.clicked.connect(self.print_last_labels)
         export_button = QPushButton("작업 Excel 저장")
         export_button.clicked.connect(self.export_current_job)
+        self.excel_import_button = QPushButton("Excel 비상 업데이트")
+        self.excel_import_button.clicked.connect(self.import_excel_products)
         diagnostic_button = QPushButton("관리자 진단파일 생성")
         diagnostic_button.clicked.connect(self.create_diagnostics)
         utility_layout.addWidget(reset_button, 0, 0)
         utility_layout.addWidget(print_button, 0, 1)
         utility_layout.addWidget(export_button, 1, 0)
-        utility_layout.addWidget(diagnostic_button, 1, 1)
+        utility_layout.addWidget(self.excel_import_button, 1, 1)
+        utility_layout.addWidget(diagnostic_button, 2, 0, 1, 2)
         right.addWidget(utility_group)
         right.addStretch()
 
@@ -339,8 +348,8 @@ class MainWindow(QMainWindow):
             age = self.cache.cache_age_hours()
             detail = f"DB {info.data_version or '-'} · {info.product_count:,}개 · 마지막 성공 {info.synced_at or '-'}"
             if age is not None and age > self.config.cache_max_age_hours:
-                self.cache_blocked = True
-                self._set_sync_state("ERROR", detail + " · 허용기간 초과, 관리자 확인 필요")
+                self.cache_blocked = False
+                self._set_sync_state("CACHED", detail + " · 오래된 DB, 업데이트 권장")
             else:
                 self.cache_blocked = False
                 self._set_sync_state("CACHED", detail)
@@ -395,14 +404,34 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def sync_now(self) -> None:
+        if (
+            self.config.source_type == "google_sheets"
+            and not self.config.google_sheets.spreadsheet_url.strip()
+        ):
+            self.cache_blocked = not bool(self.cache.info().product_count)
+            self._set_sync_state(
+                "NO_DATA" if self.cache_blocked else "CACHED",
+                "Google Sheet 주소가 없습니다. 'Sheet 설정'을 눌러 주소를 한 번 등록하세요.",
+            )
+            return
+        self._start_sync(self.source_factory, "Google Sheet")
+
+    def _start_sync(
+        self,
+        source_factory: Callable[[Callable[[str], None]], ProductSource],
+        source_label: str,
+    ) -> None:
         if self.sync_thread and self.sync_thread.isRunning():
             self.statusBar().showMessage("상품정보 업데이트가 이미 진행 중입니다.", 3000)
             return
-        self._set_sync_state("SYNCING", "SharePoint/상품 소스에서 최신 데이터를 확인하고 있습니다.")
+        self._active_sync_label = source_label
+        self._set_sync_state("SYNCING", f"{source_label}에서 최신 상품 CSV를 확인하고 있습니다.")
         self.update_button.setEnabled(False)
+        self.excel_import_button.setEnabled(False)
+        self.sheet_settings_button.setEnabled(False)
         thread = QThread(self)
         worker = SyncWorker(
-            self.source_factory,
+            source_factory,
             self.cache,
             self.config.resolved_data_dir / "sync-status.json",
             self.config.large_drop_threshold,
@@ -421,18 +450,15 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _show_login_message(self, message: str) -> None:
-        QMessageBox.information(self, "Microsoft 로그인", message)
+        QMessageBox.information(self, "상품정보 안내", message)
 
     @Slot(object)
     def _sync_finished(self, result: SyncResult) -> None:
         self.update_button.setEnabled(True)
-        age = self.cache.cache_age_hours()
-        self.cache_blocked = result.state == "NO_DATA" or (
-            result.state != "CURRENT"
-            and age is not None
-            and age > self.config.cache_max_age_hours
-        )
-        display_state = "ERROR" if self.cache_blocked and result.state == "CACHED" else result.state
+        self.excel_import_button.setEnabled(True)
+        self.sheet_settings_button.setEnabled(True)
+        self.cache_blocked = result.state == "NO_DATA"
+        display_state = result.state
         self._set_sync_state(
             display_state,
             f"{result.message} · DB {result.cache.data_version or '-'} · {result.cache.product_count:,}개",
@@ -443,6 +469,62 @@ class MainWindow(QMainWindow):
         else:
             self._error(result.message, beep=False)
         self.fnsku_input.setFocus()
+
+    @Slot()
+    def configure_google_sheet(self) -> None:
+        if self.sync_thread and self.sync_thread.isRunning():
+            self.statusBar().showMessage("업데이트가 끝난 뒤 설정을 변경하세요.", 3000)
+            return
+        current = self.config.google_sheets.spreadsheet_url
+        value, accepted = QInputDialog.getText(
+            self,
+            "Google Sheet 설정",
+            "BeyondPack_Master 탭이 포함된 Google Sheet 주소를 붙여넣으세요.",
+            QLineEdit.Normal,
+            current,
+        )
+        if not accepted:
+            return
+        value = value.strip()
+        try:
+            google_sheet_csv_url(value)
+        except BeyondPackError as exc:
+            self._error(f"{exc} [{exc.code}]")
+            return
+        self.config.source_type = "google_sheets"
+        self.config.google_sheets.spreadsheet_url = value
+        self.config.google_sheets.gid = ""
+        try:
+            save_config(self.config, self.config_path)
+        except OSError as exc:
+            self._error(f"설정을 저장하지 못했습니다: {exc} [BP-CFG-002]")
+            return
+        self._success("Google Sheet 주소를 저장했습니다. 상품정보를 자동 업데이트합니다.")
+        self.sync_now()
+
+    @Slot()
+    def import_excel_products(self) -> None:
+        if self.sync_thread and self.sync_thread.isRunning():
+            self.statusBar().showMessage("업데이트가 끝난 뒤 Excel을 가져오세요.", 3000)
+            return
+        filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "비상 상품 마스터 선택",
+            str(Path.home()),
+            "Excel 통합 문서 (*.xlsx)",
+        )
+        if not filename:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Excel 비상 업데이트",
+            "선택한 Excel을 검증한 뒤 로컬 상품DB에 적용합니다.\n"
+            "Google Sheet 자동 업데이트 설정은 유지됩니다. 계속할까요?",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        path = Path(filename)
+        self._start_sync(lambda _notifier: ExcelProductSource(path), f"Excel({path.name})")
 
     @Slot()
     def _sync_thread_finished(self) -> None:
@@ -464,7 +546,7 @@ class MainWindow(QMainWindow):
     def lookup_product(self) -> None:
         if self.cache_blocked:
             self._error(
-                "상품DB가 없거나 허용된 사용기간을 초과했습니다. 상품정보를 업데이트하세요. [BP-CACHE-001]"
+                "사용 가능한 로컬 상품DB가 없습니다. 상품정보를 업데이트하세요. [BP-CACHE-001]"
             )
             return
         country_code = self._selected_country_code()

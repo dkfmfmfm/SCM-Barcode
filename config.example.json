@@ -1,5 +1,5 @@
 {
-  "source_type": "sharepoint",
+  "source_type": "google_sheets",
   "source_json_path": "sample/products.json",
   "data_dir": "",
   "operator_name": "",
@@ -8,14 +8,10 @@
   "scanner_terminator": "enter",
   "weight_max_kg": 1000.0,
   "dimension_max_cm": 500.0,
-  "sharepoint": {
-    "tenant_id": "YOUR_ENTRA_TENANT_ID",
-    "client_id": "YOUR_PUBLIC_CLIENT_APP_ID",
-    "site_id": "YOUR_SHAREPOINT_SITE_ID",
-    "list_id": "YOUR_PRODUCT_PUBLISHED_LIST_ID",
-    "authority_host": "https://login.microsoftonline.com",
-    "graph_base_url": "https://graph.microsoft.com/v1.0",
-    "scopes": ["Sites.Read.All"]
+  "google_sheets": {
+    "spreadsheet_url": "https://docs.google.com/spreadsheets/d/YOUR_SPREADSHEET_ID/edit?gid=0",
+    "gid": "0",
+    "timeout_seconds": 10,
+    "max_download_bytes": 20000000
   }
 }
-

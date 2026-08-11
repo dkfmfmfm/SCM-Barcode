@@ -18,19 +18,16 @@ def default_app_dir() -> Path:
 
 
 @dataclass(slots=True)
-class SharePointSettings:
-    tenant_id: str = ""
-    client_id: str = ""
-    site_id: str = ""
-    list_id: str = ""
-    authority_host: str = "https://login.microsoftonline.com"
-    graph_base_url: str = "https://graph.microsoft.com/v1.0"
-    scopes: list[str] = field(default_factory=lambda: ["Sites.Read.All"])
+class GoogleSheetsSettings:
+    spreadsheet_url: str = ""
+    gid: str = ""
+    timeout_seconds: int = 10
+    max_download_bytes: int = 20_000_000
 
 
 @dataclass(slots=True)
 class AppConfig:
-    source_type: str = "json"
+    source_type: str = "google_sheets"
     source_json_path: str = ""
     data_dir: str = ""
     operator_name: str = ""
@@ -39,7 +36,7 @@ class AppConfig:
     scanner_terminator: str = "enter"
     weight_max_kg: float = 1000.0
     dimension_max_cm: float = 500.0
-    sharepoint: SharePointSettings = field(default_factory=SharePointSettings)
+    google_sheets: GoogleSheetsSettings = field(default_factory=GoogleSheetsSettings)
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -47,14 +44,18 @@ class AppConfig:
 
 
 def _from_dict(raw: dict[str, Any]) -> AppConfig:
-    sharepoint = SharePointSettings(**raw.get("sharepoint", {}))
-    values = {k: v for k, v in raw.items() if k != "sharepoint"}
+    google_sheets = GoogleSheetsSettings(**raw.get("google_sheets", {}))
+    values = {k: v for k, v in raw.items() if k not in {"sharepoint", "google_sheets"}}
+    # 2.1.x used SharePoint. 2.2 migrates that setting to the new primary
+    # source without preserving credentials or opening a Microsoft login flow.
+    if values.get("source_type") == "sharepoint":
+        values["source_type"] = "google_sheets"
     try:
-        config = AppConfig(**values, sharepoint=sharepoint)
+        config = AppConfig(**values, google_sheets=google_sheets)
     except TypeError as exc:
         raise ConfigurationError(f"config.json 필드가 올바르지 않습니다: {exc}") from exc
-    if config.source_type not in {"json", "sharepoint"}:
-        raise ConfigurationError("source_type은 json 또는 sharepoint여야 합니다.")
+    if config.source_type not in {"json", "google_sheets"}:
+        raise ConfigurationError("source_type은 google_sheets 또는 json이어야 합니다.")
     if not 0 <= config.large_drop_threshold < 1:
         raise ConfigurationError("large_drop_threshold는 0 이상 1 미만이어야 합니다.")
     return config
@@ -71,11 +72,19 @@ def load_config(path: Path | None = None) -> tuple[AppConfig, Path]:
         raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigurationError(f"설정 파일을 읽을 수 없습니다: {config_path}") from exc
-    return _from_dict(raw), config_path
+    config = _from_dict(raw)
+    if raw.get("source_type") == "sharepoint":
+        save_config(config, config_path)
+    return config, config_path
 
 
 def _config_dict(config: AppConfig) -> dict[str, Any]:
     return asdict(config)
+
+
+def save_config(config: AppConfig, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_json_write(path, _config_dict(config))
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:

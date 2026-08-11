@@ -23,21 +23,23 @@ jobs:
           set -euo pipefail
           test -s PLAN.MD
           test -s RESEARCH.MD
-          grep -Fq "SharePoint" PLAN.MD
+          grep -Fq "Google Sheet" PLAN.MD
           grep -Fq "FNSKU" PLAN.MD
           grep -Fq "품목코드" PLAN.MD
           grep -Fq "국가명" PLAN.MD
           grep -Fq "오프라인" PLAN.MD
           grep -Fq "포장" PLAN.MD
           grep -Fq "PLAN.MD" RESEARCH.MD
-          test -s docs/SHAREPOINT_SETUP.md
-          test -s scripts/create-sharepoint-list.ps1
-          test -s scripts/import-sharepoint-products.ps1
+          test -s docs/GOOGLE_SHEETS_SETUP.md
+          test -s docs/USER_MANUAL.md
+          test -s templates/BeyondPack_Master_Template.csv
 
       - name: Run core tests
         env:
           PYTHONPATH: src
-        run: python -m unittest discover -s tests -v
+        run: |
+          python -m pip install "openpyxl>=3.1,<4"
+          python -m unittest discover -s tests -v
 
       - name: Compile Python sources
         run: python -m compileall -q src tests beyondpack_entry.py run.py
@@ -46,11 +48,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          foreach ($file in @(
-            "scripts/create-sharepoint-list.ps1",
-            "scripts/import-sharepoint-products.ps1",
-            "scripts/build-windows.ps1"
-          )) {
+          foreach ($file in @("scripts/build-windows.ps1")) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
