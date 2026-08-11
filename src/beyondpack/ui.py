@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
             ("item_code", "품목코드", 1, 0, 1, 1),
             ("sku", "SKU", 1, 1, 1, 1),
             ("fnsku", "FNSKU", 1, 2, 1, 1),
-            ("country_name", "국가명", 2, 0, 1, 1),
+            ("country_name", "국가", 2, 0, 1, 1),
         ]
         for key, label, row, column, row_span, col_span in specs:
             box = QVBoxLayout()
