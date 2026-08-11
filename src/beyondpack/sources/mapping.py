@@ -18,6 +18,7 @@ FIELD_ALIASES = {
     "source_modified_at": ("SourceModifiedAt", "source_modified_at", "modified"),
     "data_version": ("DataVersion", "data_version"),
     "schema_version": ("SchemaVersion", "schema_version"),
+    "lookup_key": ("LookupKey", "lookup_key"),
 }
 
 
@@ -48,5 +49,5 @@ def map_product(row: dict[str, Any], default_version: str = "", default_schema: 
         source_modified_at=str(_pick(row, "source_modified_at")).strip(),
         data_version=str(_pick(row, "data_version", default_version) or default_version).strip(),
         schema_version=schema_version,
+        lookup_key=str(_pick(row, "lookup_key")).strip().upper(),
     )
-
