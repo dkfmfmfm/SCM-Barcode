@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from .normalization import normalize_fnsku
+from .normalization import normalize_country_code, normalize_fnsku, product_lookup_key
 
 
 def utc_now_iso() -> str:
@@ -25,11 +25,20 @@ class Product:
     status: str = "Published"
     source_modified_at: str = ""
     data_version: str = ""
-    schema_version: int = 1
+    schema_version: int = 2
+    lookup_key: str = ""
 
     @property
     def normalized_fnsku(self) -> str:
         return normalize_fnsku(self.fnsku)
+
+    @property
+    def normalized_country_code(self) -> str:
+        return normalize_country_code(self.country_code)
+
+    @property
+    def computed_lookup_key(self) -> str:
+        return product_lookup_key(self.fnsku, self.country_code)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -68,4 +77,3 @@ class BoxGroupInput:
     width_cm: Decimal
     height_cm: Decimal
     items: tuple[BoxItem, ...]
-
