@@ -2,12 +2,16 @@ import unittest
 from decimal import Decimal
 
 from beyondpack.errors import PackagingValidationError
-from beyondpack.normalization import normalize_fnsku, positive_decimal, positive_int
+from beyondpack.normalization import normalize_country_code, normalize_fnsku, positive_decimal, positive_int, product_lookup_key
 
 
 class NormalizationTests(unittest.TestCase):
     def test_fnsku_removes_scanner_whitespace_and_uppercases(self):
         self.assertEqual(normalize_fnsku("  x00 3\tAbc\r\n123 "), "X003ABC123")
+
+    def test_composite_lookup_key_normalizes_country(self):
+        self.assertEqual(normalize_country_code(" de\r\n"), "DE")
+        self.assertEqual(product_lookup_key(" x001 ", " de "), "X001|DE")
 
     def test_positive_integer_rejects_decimal_and_zero(self):
         for value in ("1.5", 0, -1, "abc"):
@@ -23,4 +27,3 @@ class NormalizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
