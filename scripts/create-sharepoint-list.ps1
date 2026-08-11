@@ -22,6 +22,7 @@ $fieldDefinitions = @(
     @{ Internal = "ItemCode";        Display = "품목코드";       Type = "Text";     Required = $true;  Choices = $null },
     @{ Internal = "SKU";             Display = "SKU";           Type = "Text";     Required = $true;  Choices = $null },
     @{ Internal = "CountryCode";     Display = "국가코드";       Type = "Text";     Required = $true;  Choices = $null },
+    @{ Internal = "LookupKey";       Display = "조회키";         Type = "Text";     Required = $true;  Choices = $null },
     @{ Internal = "CountryName";     Display = "국가명";         Type = "Text";     Required = $true;  Choices = $null },
     @{ Internal = "ProductName";     Display = "품목명";         Type = "Text";     Required = $true;  Choices = $null },
     @{ Internal = "ProductNameEn";   Display = "영문 품목명";    Type = "Text";     Required = $false; Choices = $null },
@@ -79,20 +80,25 @@ foreach ($definition in $fieldDefinitions) {
 
 Set-PnPField -List $ListName -Identity "FNSKU" -Values @{
     Indexed = $true
+    EnforceUniqueValues = $false
+} | Out-Null
+
+Set-PnPField -List $ListName -Identity "LookupKey" -Values @{
+    Indexed = $true
     EnforceUniqueValues = $true
 } | Out-Null
 
-foreach ($fieldName in @("Status", "DataVersion", "SourceModifiedAt")) {
+foreach ($fieldName in @("CountryCode", "Status", "DataVersion", "SourceModifiedAt")) {
     Set-PnPField -List $ListName -Identity $fieldName -Values @{ Indexed = $true } | Out-Null
 }
 
 Set-PnPField -List $ListName -Identity "SchemaVersion" -Values @{ Decimals = 0 } | Out-Null
 
-$viewFields = @("FNSKU", "ItemCode", "SKU", "CountryName", "ProductName", "Status", "DataVersion", "SourceModifiedAt")
+$viewFields = @("FNSKU", "CountryCode", "LookupKey", "ItemCode", "SKU", "CountryName", "ProductName", "Status", "DataVersion", "SourceModifiedAt")
 $publishedView = Get-PnPView -List $ListName -Identity "Published 상품" -ErrorAction SilentlyContinue
 if ($null -eq $publishedView) {
     $query = "<Where><Eq><FieldRef Name='Status'/><Value Type='Choice'>Published</Value></Eq></Where><OrderBy><FieldRef Name='FNSKU' Ascending='TRUE'/></OrderBy>"
     Add-PnPView -List $ListName -Title "Published 상품" -Fields $viewFields -Query $query -Paged -RowLimit 100 | Out-Null
 }
 
-Write-Host "완료: Product_Published 목록, 필수 열, FNSKU 고유값, 인덱스, Published 보기를 구성했습니다."
+Write-Host "완료: Product_Published 목록, FNSKU+국가 LookupKey 고유값, 인덱스, Published 보기를 구성했습니다."
