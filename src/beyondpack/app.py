@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from importlib import resources
 from pathlib import Path
 from typing import Callable
@@ -48,22 +49,60 @@ def build_source_factory(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="BeyondPack barcode packing workstation")
     parser.add_argument("--config", type=Path, help="config.json 경로")
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="GUI 구성요소를 초기화한 뒤 종료합니다.",
+    )
     args = parser.parse_args(argv)
-    config, config_path = load_config(args.config)
-    data_dir = config.resolved_data_dir
-    cache = ProductCacheRepository(data_dir)
-    packaging = PackagingRepository(data_dir / "packaging.db")
 
     try:
         from PySide6.QtWidgets import QApplication
         from .ui import MainWindow
-    except ImportError:
-        print("PySide6가 설치되지 않았습니다. pip install -r requirements.txt", file=sys.stderr)
-        return 2
+    except ImportError as exc:
+        raise RuntimeError(
+            "화면 구성요소를 불러올 수 없습니다. 프로그램을 다시 설치하세요."
+        ) from exc
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("BeyondPack")
     app.setOrganizationName("BEYOND EARTH Co.,Ltd.")
+
+    if args.self_test:
+        with tempfile.TemporaryDirectory(prefix="beyondpack-self-test-") as temp_dir:
+            root = Path(temp_dir)
+            sample_path = Path(
+                resources.files("beyondpack").joinpath("resources/sample-products.json")
+            )
+            config = AppConfig(
+                source_type="json",
+                source_json_path=str(sample_path),
+                data_dir=str(root / "data"),
+                operator_name="SELF-TEST",
+            )
+            config_path = root / "config.json"
+            cache = ProductCacheRepository(config.resolved_data_dir)
+            packaging = PackagingRepository(config.resolved_data_dir / "packaging.db")
+            window = MainWindow(
+                config,
+                config_path,
+                cache,
+                packaging,
+                build_source_factory(config, config_path),
+                auto_sync=False,
+            )
+            window.show()
+            app.processEvents()
+            if not window.isVisible() or "BeyondPack" not in window.windowTitle():
+                raise RuntimeError("GUI 창 초기화 검사에 실패했습니다.")
+            window.close()
+            app.processEvents()
+        return 0
+
+    config, config_path = load_config(args.config)
+    data_dir = config.resolved_data_dir
+    cache = ProductCacheRepository(data_dir)
+    packaging = PackagingRepository(data_dir / "packaging.db")
     window = MainWindow(
         config,
         config_path,
