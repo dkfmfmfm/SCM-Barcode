@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 from beyondpack.cache import ProductCacheRepository
 from beyondpack.errors import DataValidationError, DuplicateProductKeyError, InactiveProductError, ProductNotFoundError
@@ -47,6 +48,22 @@ class CacheTests(unittest.TestCase):
         found = self.cache.lookup(" X003ABC123\r\n", "us")
         self.assertEqual(found.item_code, "A000000010")
         self.assertEqual(self.cache.info().data_version, "V1")
+
+    def test_staging_database_names_are_unique(self):
+        first = self.cache._new_snapshot_path()
+        second = self.cache._new_snapshot_path()
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.name.endswith(".new.db"))
+
+    def test_windows_file_lock_is_retried(self):
+        source = Path(self.temp.name) / "source.db"
+        target = Path(self.temp.name) / "target.db"
+        with patch(
+            "beyondpack.cache.os.replace",
+            side_effect=[PermissionError("locked"), None],
+        ) as replace:
+            self.cache._replace_with_retry(source, target)
+        self.assertEqual(replace.call_count, 2)
 
     def test_duplicate_composite_key_rejects_entire_snapshot(self):
         batch = ProductBatch((product("X1"), product(" x1 ")), "V1", 2)
