@@ -1,0 +1,37 @@
+name: Documentation validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    name: VALIDATION
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate development baseline documents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s PLAN.MD
+          test -s RESEARCH.MD
+
+          grep -Fq "SharePoint" PLAN.MD
+          grep -Fq "FNSKU" PLAN.MD
+          grep -Fq "SKU" PLAN.MD
+          grep -Fq "품목코드" PLAN.MD
+          grep -Fq "국가명" PLAN.MD
+          grep -Fq "오프라인" PLAN.MD
+          grep -Fq "포장" PLAN.MD
+
+          grep -Fq "PLAN.MD" RESEARCH.MD
+          grep -Fq "SharePoint" RESEARCH.MD
