@@ -34,7 +34,6 @@ FNSKU
 ItemCode
 SKU
 CountryCode
-CountryName
 ProductName
 ProductNameEn
 AmazonAccount
@@ -44,7 +43,7 @@ DataVersion
 SchemaVersion
 ```
 
-필수 열은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `CountryName`, `ProductName`이다. 활성 상태는 `Published`, `Active`, `Y`를 사용할 수 있다.
+필수 열은 `FNSKU`, `ItemCode`, `SKU`, `CountryCode`, `ProductName`이다. `CountryName`은 이전 파일 호환용 선택 열이며, 없으면 `CountryCode`가 화면의 국가로 표시된다. 활성 상태는 `Published`, `Active`, `Y`를 사용할 수 있다.
 
 ## 최초 설정
 
