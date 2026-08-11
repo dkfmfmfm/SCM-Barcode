@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
-    QTextDocument,
     QVBoxLayout,
     QWidget,
 )
@@ -102,6 +101,7 @@ class MainWindow(QMainWindow):
         cache: ProductCacheRepository,
         packaging: PackagingRepository,
         source_factory: Callable[[Callable[[str], None]], ProductSource],
+        auto_sync: bool = True,
     ):
         super().__init__()
         self.config = config
@@ -125,7 +125,8 @@ class MainWindow(QMainWindow):
         self._refresh_country_options()
         self._restore_draft()
         self._show_initial_cache_state()
-        QTimer.singleShot(150, self.sync_now)
+        if auto_sync:
+            QTimer.singleShot(150, self.sync_now)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -151,7 +152,7 @@ class MainWindow(QMainWindow):
         self.country_combo.currentIndexChanged.connect(self._country_changed)
         header.addWidget(self.country_combo)
         header.addWidget(QLabel("작업자"))
-        self.operator_input = QLineEdit(config.operator_name)
+        self.operator_input = QLineEdit(self.config.operator_name)
         self.operator_input.setPlaceholderText("이름 또는 사번")
         self.operator_input.setMaximumWidth(180)
         header.addWidget(self.operator_input)

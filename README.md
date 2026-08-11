@@ -1,4 +1,4 @@
-# BeyondPack 2.1
+# BeyondPack 2.1.1
 
 `PLAN.MD`와 `RESEARCH.MD`를 기준으로 구현한 Windows 포장 작업 프로그램이다. 작업자가 국가를 선택한 뒤 FNSKU를 스캔하면 `FNSKU+국가` 복합키로 품목명·품목코드·SKU·국가명을 로컬 SQLite에서 즉시 조회하고, 박스수량·무게·치수·상품수량을 합포 단위로 저장한다.
 
@@ -107,12 +107,14 @@ python -m unittest discover -s tests -v
 
 ## Windows 실행파일 다운로드·빌드
 
-GitHub Releases의 `v2.1.0` 사전 릴리스는 다음 두 형식을 제공한다.
+GitHub Releases의 최신 사전 릴리스는 다음 두 형식을 제공한다.
 
-- `BeyondPack-2.1.0-Windows-x64-portable.zip`: 현장 권장본. 압축 해제 후 `BeyondPack\BeyondPack.exe` 실행
-- `BeyondPack-2.1.0-Windows-x64.exe`: 단일 파일. 배포는 간단하지만 첫 실행이 더 느릴 수 있음
+- `BeyondPack-<버전>-Windows-x64-portable.zip`: 현장 권장본. 압축 해제 후 `BeyondPack\BeyondPack.exe` 실행
+- `BeyondPack-<버전>-Windows-x64.exe`: 단일 파일. 배포는 간단하지만 첫 실행이 더 느릴 수 있음
 
 `SHA256SUMS.txt`로 파일 무결성을 확인한다. 현재 빌드는 코드서명과 현장 UAT 전이므로 운영 전 사내 코드서명·SmartScreen·백신·실제 장비 검증이 필요하다.
+
+실행 전 오류를 포함한 시작 기록은 `%LOCALAPPDATA%\BeyondPack\logs\startup.log`에 저장된다.
 
 직접 빌드할 때는 다음 명령을 사용한다.
 
