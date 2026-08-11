@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication
         from .ui import MainWindow
     except ImportError as exc:
@@ -92,11 +93,18 @@ def main(argv: list[str] | None = None) -> int:
                 auto_sync=False,
             )
             window.show()
-            app.processEvents()
-            if not window.isVisible() or "BeyondPack" not in window.windowTitle():
+            result = {"visible": False}
+
+            def finish_self_test() -> None:
+                result["visible"] = window.isVisible() and "BeyondPack" in window.windowTitle()
+                window.close()
+                app.quit()
+
+            QTimer.singleShot(250, finish_self_test)
+            QTimer.singleShot(5000, app.quit)
+            app.exec()
+            if not result["visible"]:
                 raise RuntimeError("GUI 창 초기화 검사에 실패했습니다.")
-            window.close()
-            app.processEvents()
         return 0
 
     config, config_path = load_config(args.config)
