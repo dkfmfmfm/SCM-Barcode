@@ -91,7 +91,7 @@ class ProductCacheRepository:
                 """
                 SELECT fnsku, item_code, sku, country_code, country_name,
                        product_name, product_name_en, amazon_account, status,
-                       source_modified_at, data_version, schema_version, lookup_key
+                       source_modified_at, data_version, schema_version
                 FROM products WHERE normalized_fnsku = ? AND country_code = ?
                 """,
                 (key, country),
