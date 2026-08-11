@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +38,9 @@ class ProductCacheRepository:
         self.data_dir = data_dir
         self.db_path = data_dir / "products.db"
         self.previous_path = data_dir / "products.previous.db"
-        self.new_path = data_dir / "products.new.db"
+
+    def _new_snapshot_path(self) -> Path:
+        return self.data_dir / f"products.{os.getpid()}.{uuid.uuid4().hex}.new.db"
 
     def exists(self) -> bool:
         return self.db_path.exists()
@@ -50,17 +54,37 @@ class ProductCacheRepository:
                 f"상품 수가 이전보다 {drop:.1%} 감소해 새 데이터 적용을 중단했습니다."
             )
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.new_path.unlink(missing_ok=True)
+        new_path = self._new_snapshot_path()
         synced_at = utc_now_iso()
         try:
-            self._write_database(self.new_path, products, batch, synced_at)
-            self._integrity_check(self.new_path, len(products))
+            self._write_database(new_path, products, batch, synced_at)
+            self._integrity_check(new_path, len(products))
             if self.db_path.exists():
                 shutil.copy2(self.db_path, self.previous_path)
-            os.replace(self.new_path, self.db_path)
+            self._replace_with_retry(new_path, self.db_path)
         finally:
-            self.new_path.unlink(missing_ok=True)
+            try:
+                new_path.unlink(missing_ok=True)
+            except OSError:
+                # Virus scanners or a terminating SQLite handle can briefly keep a
+                # failed staging file open on Windows. Its unique name makes it
+                # harmless, so cleanup must not hide the real synchronization result.
+                pass
         return CacheInfo(len(products), batch.data_version, batch.schema_version, synced_at)
+
+    @staticmethod
+    def _replace_with_retry(source: Path, target: Path, attempts: int = 6) -> None:
+        for attempt in range(attempts):
+            try:
+                os.replace(source, target)
+                return
+            except OSError as exc:
+                is_windows_lock = isinstance(exc, PermissionError) or getattr(
+                    exc, "winerror", None
+                ) in {32, 33}
+                if not is_windows_lock or attempt == attempts - 1:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
 
     def available_countries(self) -> tuple[tuple[str, str], ...]:
         if not self.db_path.exists():

@@ -53,8 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QLockFile, QTimer
+        from PySide6.QtWidgets import QApplication, QMessageBox
         from .ui import MainWindow
     except ImportError as exc:
         raise RuntimeError(
@@ -107,6 +107,17 @@ def main(argv: list[str] | None = None) -> int:
 
     config, config_path = load_config(args.config)
     data_dir = config.resolved_data_dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+    instance_lock = QLockFile(str(data_dir / "beyondpack.instance.lock"))
+    instance_lock.setStaleLockTime(30_000)
+    if not instance_lock.tryLock(100):
+        QMessageBox.warning(
+            None,
+            "BeyondPack 실행 중",
+            "BeyondPack이 이미 실행 중입니다. 기존 창을 사용하세요.\n"
+            "창이 보이지 않으면 작업관리자에서 BeyondPack.exe를 종료한 뒤 다시 실행하세요.",
+        )
+        return 0
     cache = ProductCacheRepository(data_dir)
     packaging = PackagingRepository(data_dir / "packaging.db")
     window = MainWindow(
@@ -117,7 +128,10 @@ def main(argv: list[str] | None = None) -> int:
         build_source_factory(config, config_path),
     )
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        instance_lock.unlock()
 
 
 if __name__ == "__main__":
