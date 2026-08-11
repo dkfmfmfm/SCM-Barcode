@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import json
 import os
-import shutil
 import sqlite3
 import time
 import uuid
@@ -38,43 +38,128 @@ class CacheInfo:
 class ProductCacheRepository:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
+        # products.db and products.previous.db are retained as read-compatible
+        # legacy files. New snapshots use immutable names so a process, antivirus,
+        # or backup agent holding the old file cannot block an update on Windows.
         self.db_path = data_dir / "products.db"
         self.previous_path = data_dir / "products.previous.db"
+        self.manifest_path = data_dir / "products.current.json"
         self._io_lock = RLock()
 
     def _new_snapshot_path(self) -> Path:
-        return self.data_dir / f"products.{os.getpid()}.{uuid.uuid4().hex}.new.db"
+        return self.data_dir / f"products.snapshot.{os.getpid()}.{uuid.uuid4().hex}.db"
+
+    @property
+    def active_db_path(self) -> Path:
+        with self._io_lock:
+            return self._active_db_path()
 
     def exists(self) -> bool:
-        return self.db_path.exists()
+        with self._io_lock:
+            return self._active_db_path().exists()
 
     def replace_snapshot(self, batch: ProductBatch, drop_threshold: float = 0.20) -> CacheInfo:
         with self._io_lock:
             products = self._validate_batch(batch)
-            previous_count = self.info().product_count if self.exists() else 0
+            previous_db = self._active_db_path()
+            previous_count = (
+                self._info_from_path(previous_db).product_count if previous_db.exists() else 0
+            )
             if previous_count and len(products) < previous_count * (1 - drop_threshold):
                 drop = 1 - (len(products) / previous_count)
                 raise DataValidationError(
                     f"상품 수가 이전보다 {drop:.1%} 감소해 새 데이터 적용을 중단했습니다."
                 )
             self.data_dir.mkdir(parents=True, exist_ok=True)
-            new_path = self._new_snapshot_path()
+            snapshot_path = self._new_snapshot_path()
             synced_at = utc_now_iso()
+            activated = False
             try:
-                self._write_database(new_path, products, batch, synced_at)
-                self._integrity_check(new_path, len(products))
-                if self.db_path.exists():
-                    shutil.copy2(self.db_path, self.previous_path)
-                self._replace_with_retry(new_path, self.db_path)
+                self._write_database(snapshot_path, products, batch, synced_at)
+                self._integrity_check(snapshot_path, len(products))
+                self._write_manifest(
+                    current=snapshot_path,
+                    previous=previous_db if previous_db.exists() else None,
+                    synced_at=synced_at,
+                )
+                activated = True
             finally:
-                try:
-                    new_path.unlink(missing_ok=True)
-                except OSError:
-                    # Virus scanners can briefly keep a failed staging file open on
-                    # Windows. Its unique name makes it harmless, so cleanup must not
-                    # hide the real synchronization result.
-                    pass
+                if not activated:
+                    try:
+                        snapshot_path.unlink(missing_ok=True)
+                    except OSError:
+                        # A scanner can briefly keep a failed snapshot open. It is not
+                        # referenced by the manifest, so leaving it cannot affect work.
+                        pass
+            self._cleanup_old_snapshots(snapshot_path, previous_db)
             return CacheInfo(len(products), batch.data_version, batch.schema_version, synced_at)
+
+    def _write_manifest(
+        self, current: Path, previous: Path | None, synced_at: str
+    ) -> None:
+        payload = {
+            "manifest_version": 1,
+            "current": current.name,
+            "previous": previous.name if previous else "",
+            "updated_at": synced_at,
+        }
+        temp_path = self.data_dir / (
+            f"products.current.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            with temp_path.open("w", encoding="utf-8", newline="\n") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._replace_with_retry(temp_path, self.manifest_path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _active_db_path(self) -> Path:
+        manifest = self._load_manifest()
+        for field in ("current", "previous"):
+            candidate = self._manifest_db_path(manifest.get(field))
+            if candidate is not None and candidate.exists():
+                return candidate
+        if self.db_path.exists():
+            return self.db_path
+        if self.previous_path.exists():
+            return self.previous_path
+        return self.db_path
+
+    def _load_manifest(self) -> dict[str, object]:
+        try:
+            payload = json.loads(self.manifest_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _manifest_db_path(self, value: object) -> Path | None:
+        if not isinstance(value, str) or not value:
+            return None
+        name = Path(value)
+        if name.name != value or not value.startswith("products") or not value.endswith(".db"):
+            return None
+        return self.data_dir / name
+
+    def _cleanup_old_snapshots(self, current: Path, previous: Path) -> None:
+        keep = {current.name, previous.name}
+        candidates = tuple(self.data_dir.glob("products.snapshot.*.db")) + tuple(
+            self.data_dir.glob("products.*.new.db")
+        )
+        for path in candidates:
+            if path.name in keep:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup is best-effort. A locked orphan is never selected because
+                # only files named in products.current.json can become active.
+                pass
 
     @staticmethod
     def _replace_with_retry(source: Path, target: Path, attempts: int = 10) -> None:
@@ -92,9 +177,10 @@ class ProductCacheRepository:
 
     def available_countries(self) -> tuple[tuple[str, str], ...]:
         with self._io_lock:
-            if not self.db_path.exists():
+            db_path = self._active_db_path()
+            if not db_path.exists():
                 return ()
-            with self._connect(self.db_path, read_only=True) as conn:
+            with self._connect(db_path, read_only=True) as conn:
                 rows = conn.execute(
                     """
                     SELECT country_code, MAX(country_name) AS country_name
@@ -114,9 +200,10 @@ class ProductCacheRepository:
         if not country:
             raise CountrySelectionRequiredError("먼저 작업 국가를 선택하세요.")
         with self._io_lock:
-            if not self.db_path.exists():
+            db_path = self._active_db_path()
+            if not db_path.exists():
                 raise ProductNotFoundError("사용할 상품DB가 없습니다. 상품정보를 업데이트하세요.")
-            with self._connect(self.db_path, read_only=True) as conn:
+            with self._connect(db_path, read_only=True) as conn:
                 row = conn.execute(
                     """
                     SELECT fnsku, item_code, sku, country_code, country_name,
@@ -150,17 +237,21 @@ class ProductCacheRepository:
 
     def info(self) -> CacheInfo:
         with self._io_lock:
-            if not self.db_path.exists():
+            db_path = self._active_db_path()
+            if not db_path.exists():
                 return CacheInfo(0, "", 0, "")
-            with self._connect(self.db_path, read_only=True) as conn:
-                values = dict(conn.execute("SELECT key, value FROM metadata").fetchall())
-                count = int(conn.execute("SELECT COUNT(*) FROM products").fetchone()[0])
-            return CacheInfo(
-                count,
-                values.get("data_version", ""),
-                int(values.get("schema_version", 0)),
-                values.get("synced_at", ""),
-            )
+            return self._info_from_path(db_path)
+
+    def _info_from_path(self, path: Path) -> CacheInfo:
+        with self._connect(path, read_only=True) as conn:
+            values = dict(conn.execute("SELECT key, value FROM metadata").fetchall())
+            count = int(conn.execute("SELECT COUNT(*) FROM products").fetchone()[0])
+        return CacheInfo(
+            count,
+            values.get("data_version", ""),
+            int(values.get("schema_version", 0)),
+            values.get("synced_at", ""),
+        )
 
     def cache_age_hours(self) -> float | None:
         synced = self.info().synced_at

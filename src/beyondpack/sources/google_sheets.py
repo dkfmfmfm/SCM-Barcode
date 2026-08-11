@@ -51,7 +51,7 @@ class GoogleSheetsProductSource(ProductSource):
             self.export_url,
             headers={
                 "Accept": "text/csv",
-                "User-Agent": "BeyondPack/2.2.2",
+                "User-Agent": "BeyondPack/2.2.3",
             },
         )
         try:

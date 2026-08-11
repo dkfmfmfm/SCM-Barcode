@@ -1,6 +1,6 @@
 # BeyondPack 상품동기화·포장 프로그램 개발계획
 
-> 기준 버전: 2.2.2  
+> 기준 버전: 2.2.3  
 > 확정일: 2026-08-11  
 > 상시 상품 원본: Google Sheet  
 > 현장 조회 원본: 로컬 SQLite  
@@ -40,7 +40,7 @@ BeyondPack은 평상시 Google Sheet의 `BeyondPack` 탭을 CSV로 자동 다운
 - Google Sheet URL 1회 설정과 로컬 저장
 - Excel 상품 마스터 비상 업데이트
 - 필수 열·필수값·중복·스키마·급감 검증
-- SQLite 새 DB 생성·무결성 검사·원자 교체
+- SQLite 불변 스냅샷 생성·무결성 검사·활성 포인터 원자 전환
 - 직전 상품DB 한 세대 백업
 - 국가 선택과 `FNSKU+CountryCode` 조회
 - 품목명·품목코드·SKU·FNSKU·국가 표시
@@ -75,11 +75,15 @@ Google Sheet / BeyondPack
 GoogleSheetsProductSource
    │ 필수 열·복합키·버전·급감 검증
    ▼
-products.<PID>.<UUID>.new.db ── 무결성 성공 ──► products.db
+products.snapshot.<PID>.<UUID>.db ── 무결성 성공
                          │
-                         └────────► products.previous.db
+                         ▼
+               products.current.json
+                  │              │
+                  ▼              └────► 직전 스냅샷
+             현재 스냅샷
 
-스캐너 ─► 국가+FNSKU 조회 ─► 로컬 products.db
+스캐너 ─► 국가+FNSKU 조회 ─► 현재 로컬 스냅샷
                               │
                               ▼
                        포장정보 직접 입력
@@ -206,7 +210,8 @@ Google Sheet에서 가져오는 값:
 
 ```text
 %LOCALAPPDATA%\BeyondPack\config.json
-%LOCALAPPDATA%\BeyondPack\data\products.db
+%LOCALAPPDATA%\BeyondPack\data\products.current.json
+%LOCALAPPDATA%\BeyondPack\data\products.snapshot.<PID>.<UUID>.db
 %LOCALAPPDATA%\BeyondPack\data\products.previous.db
 %LOCALAPPDATA%\BeyondPack\data\packaging.db
 %LOCALAPPDATA%\BeyondPack\data\sync-status.json

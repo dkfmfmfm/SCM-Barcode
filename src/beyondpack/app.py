@@ -91,18 +91,36 @@ def main(argv: list[str] | None = None) -> int:
                 auto_sync=False,
             )
             window.show()
-            result = {"visible": False}
+            result = {"visible": False, "steppers": False}
 
             def finish_self_test() -> None:
                 result["visible"] = window.isVisible() and "BeyondPack" in window.windowTitle()
+                qty_before = window.qty_input.value()
+                box_before = window.box_count.value()
+                window.step_buttons["qty"][0].click()
+                window.step_buttons["boxCount"][0].click()
+                stepped_up = (
+                    window.qty_input.value() == qty_before + 1
+                    and window.box_count.value() == box_before + 1
+                )
+                window.step_buttons["qty"][1].click()
+                window.step_buttons["boxCount"][1].click()
+                result["steppers"] = (
+                    stepped_up
+                    and window.qty_input.value() == qty_before
+                    and window.box_count.value() == box_before
+                )
                 window.close()
                 app.quit()
 
             QTimer.singleShot(250, finish_self_test)
             QTimer.singleShot(5000, app.quit)
             app.exec()
-            if not result["visible"]:
-                raise RuntimeError("GUI 창 초기화 검사에 실패했습니다.")
+            if not result["visible"] or not result["steppers"]:
+                raise RuntimeError(
+                    "GUI 창 또는 수량 증감 버튼 검사에 실패했습니다: "
+                    f"visible={result['visible']}, steppers={result['steppers']}"
+                )
         return 0
 
     config, config_path = load_config(args.config)
