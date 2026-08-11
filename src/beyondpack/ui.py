@@ -152,7 +152,7 @@ class MainWindow(QMainWindow):
         self.country_combo.currentIndexChanged.connect(self._country_changed)
         header.addWidget(self.country_combo)
         header.addWidget(QLabel("작업자"))
-        self.operator_input = QLineEdit(config.operator_name)
+        self.operator_input = QLineEdit(self.config.operator_name)
         self.operator_input.setPlaceholderText("이름 또는 사번")
         self.operator_input.setMaximumWidth(180)
         header.addWidget(self.operator_input)
