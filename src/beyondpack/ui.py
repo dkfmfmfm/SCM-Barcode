@@ -374,7 +374,8 @@ class MainWindow(QMainWindow):
         self.country_combo.clear()
         self.country_combo.addItem("국가 선택", "")
         for code, name in self.cache.available_countries():
-            self.country_combo.addItem(f"{name} ({code})", code)
+            label = code if not name or name.upper() == code.upper() else f"{name} ({code})"
+            self.country_combo.addItem(label, code)
         self.country_combo.blockSignals(False)
         if selected:
             self._select_country(selected)
