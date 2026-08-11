@@ -70,7 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("BEYOND EARTH Co.,Ltd.")
 
     if args.self_test:
-        with tempfile.TemporaryDirectory(prefix="beyondpack-self-test-") as temp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="beyondpack-self-test-", ignore_cleanup_errors=True
+        ) as temp_dir:
             root = Path(temp_dir)
             sample_path = Path(
                 resources.files("beyondpack").joinpath("resources/sample-products.json")
