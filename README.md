@@ -1,6 +1,6 @@
-# BeyondPack 2.0
+# BeyondPack 2.1
 
-`PLAN.MD`와 `RESEARCH.MD`를 기준으로 새로 구현한 Windows 포장 작업 프로그램이다. FNSKU를 스캔하면 품목명·품목코드·SKU·국가명을 로컬 SQLite에서 즉시 조회하고, 작업자가 입력한 박스수량·무게·치수·상품수량을 합포 단위로 저장한다.
+`PLAN.MD`와 `RESEARCH.MD`를 기준으로 구현한 Windows 포장 작업 프로그램이다. 작업자가 국가를 선택한 뒤 FNSKU를 스캔하면 `FNSKU+국가` 복합키로 품목명·품목코드·SKU·국가명을 로컬 SQLite에서 즉시 조회하고, 박스수량·무게·치수·상품수량을 합포 단위로 저장한다.
 
 > 현재 상태: 소스 기반 MVP. 실제 운영 전 SharePoint 앱 등록, 실제 스캐너·프린터 UAT, 기존 v1.4 라벨 양식 대조가 필요하다.
 
@@ -9,8 +9,9 @@
 - 실행 시 SharePoint `Product_Published` 전체 동기화
 - Microsoft Graph 페이지네이션 및 429/503 제한 재시도
 - Windows DPAPI로 MSAL 토큰 캐시 보호
-- FNSKU 대문자·공백 정규화와 정확 일치 조회
-- FNSKU 중복·필수값·스키마·데이터 버전 검증
+- 작업 시작 시 국가 선택 및 박스 구성 중 국가 변경 방지
+- FNSKU 대문자·공백 정규화와 `FNSKU|CountryCode` 정확 일치 조회
+- 동일 FNSKU의 국가별 상품 허용, 동일 FNSKU+국가 중복 차단
 - 상품 수 20% 이상 급감 시 새 데이터 적용 차단
 - `products.new.db` 검증 후 `products.db` 원자 교체
 - 기존 DB를 `products.previous.db`로 한 세대 보관
@@ -75,7 +76,7 @@ SharePoint 연결 전 통합시험이나 비상 배포에는 다음 형태의 JS
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "data_version": "2026.08.11.01",
   "products": [
     {
@@ -88,7 +89,8 @@ SharePoint 연결 전 통합시험이나 비상 배포에는 다음 형태의 JS
       "Status": "Published",
       "SourceModifiedAt": "2026-08-11T00:00:00Z",
       "DataVersion": "2026.08.11.01",
-      "SchemaVersion": 1
+      "SchemaVersion": 2,
+      "LookupKey": "X003ABC123|US"
     }
   ]
 }
