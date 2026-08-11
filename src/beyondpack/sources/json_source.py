@@ -18,11 +18,11 @@ class JsonProductSource(ProductSource):
         except (OSError, json.JSONDecodeError) as exc:
             raise SourceError(f"상품 JSON을 읽을 수 없습니다: {self.path}") from exc
         if isinstance(payload, list):
-            rows, version, schema = payload, "json-local", 1
+            rows, version, schema = payload, "json-local", 2
         elif isinstance(payload, dict):
             rows = payload.get("products", [])
             version = str(payload.get("data_version", "json-local"))
-            schema = int(payload.get("schema_version", 1))
+            schema = int(payload.get("schema_version", 2))
         else:
             raise SourceError("상품 JSON 최상위 값은 객체 또는 배열이어야 합니다.")
         if not isinstance(rows, list):
