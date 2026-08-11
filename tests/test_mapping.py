@@ -4,7 +4,7 @@ from beyondpack.sources.mapping import map_product
 
 
 class MappingTests(unittest.TestCase):
-    def test_sharepoint_lookup_key_is_mapped(self):
+    def test_explicit_lookup_key_is_mapped(self):
         product = map_product(
             {
                 "FNSKU": " x1 ",
