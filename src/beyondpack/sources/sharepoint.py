@@ -17,7 +17,7 @@ from .mapping import map_product
 
 GRAPH_FIELDS = (
     "FNSKU,ItemCode,SKU,CountryCode,CountryName,ProductName,ProductNameEn,"
-    "AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion"
+    "AmazonAccount,Status,SourceModifiedAt,DataVersion,SchemaVersion,LookupKey"
 )
 
 
@@ -139,4 +139,3 @@ class SharePointProductSource(ProductSource):
                     break
                 time.sleep(2 ** attempt)
         raise SourceError(f"SharePoint 연결 실패: {last_error}")
-
