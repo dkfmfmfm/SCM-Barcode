@@ -4,7 +4,7 @@
 
 ## 운영 원칙
 
-- 기본 상품 원본: Google Sheet의 `BeyondPack_Master` 탭
+- 기본 상품 원본: Google Sheet의 `BeyondPack` 탭
 - 자동 업데이트: 프로그램 시작 시, 또는 `F2` 실행 시 CSV 자동 다운로드
 - 현장 조회: 로컬 `products.db`에서 즉시 조회
 - 장애 대응: 다운로드·형식·중복 오류 시 기존 DB 유지
@@ -47,7 +47,7 @@ SchemaVersion
 
 ## 최초 설정
 
-1. Google Sheet에 `BeyondPack_Master` 탭을 만들고 첫 행에 위 열을 넣는다.
+1. Google Sheet의 `BeyondPack` 탭 첫 행에 위 열을 넣는다.
 2. 설치 후 바탕화면의 `BeyondPack`을 실행한다.
 3. 상단 `Sheet 설정`을 누르고 해당 탭이 열린 Google Sheet 주소를 붙여넣는다.
 4. 프로그램이 CSV를 자동 다운로드하고 검증한 뒤 국가 목록을 표시한다.

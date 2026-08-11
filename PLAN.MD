@@ -8,7 +8,7 @@
 
 ## 1. 최종 의사결정
 
-BeyondPack은 평상시 Google Sheet의 `BeyondPack_Master` 탭을 CSV로 자동 다운로드한다. 다운로드한 데이터를 검증한 뒤에만 로컬 SQLite 상품DB를 교체한다. 작업 중 FNSKU 스캔은 네트워크가 아니라 로컬 DB를 조회한다. Google Sheet 또는 인터넷 장애 시 검증된 기존 DB로 작업을 계속하고, 관리자는 동일 스키마의 Excel을 비상 적용할 수 있다.
+BeyondPack은 평상시 Google Sheet의 `BeyondPack` 탭을 CSV로 자동 다운로드한다. 다운로드한 데이터를 검증한 뒤에만 로컬 SQLite 상품DB를 교체한다. 작업 중 FNSKU 스캔은 네트워크가 아니라 로컬 DB를 조회한다. Google Sheet 또는 인터넷 장애 시 검증된 기존 DB로 작업을 계속하고, 관리자는 동일 스키마의 Excel을 비상 적용할 수 있다.
 
 이 구조는 BeyondPack 1.4의 단순성과 속도를 유지하면서 다음 약점을 제거한다.
 
@@ -69,7 +69,7 @@ BeyondPack은 평상시 Google Sheet의 `BeyondPack_Master` 탭을 CSV로 자동
 상품 담당자
    │ 수정·승인
    ▼
-Google Sheet / BeyondPack_Master
+Google Sheet / BeyondPack
    │ 실행 시 또는 F2, CSV 다운로드
    ▼
 GoogleSheetsProductSource
@@ -110,7 +110,7 @@ products.new.db ── 무결성 성공 ──► products.db
 | `SchemaVersion` | N | 기본값 2 |
 | `LookupKey` | N | 비우면 `FNSKU|CountryCode` 자동 생성 |
 
-신규 `BeyondPack_Master`에는 `CountryName` 열을 만들지 않는다. 기존 CSV·Excel에 해당 열이 남아 있으면 계속 읽을 수 있다.
+`BeyondPack` 시트에는 `CountryName` 열을 만들지 않는다. 기존 CSV·Excel에 해당 열이 남아 있으면 계속 읽을 수 있다.
 
 ### 5.2 고유키
 
@@ -168,7 +168,7 @@ Google Sheet에서 가져오는 값:
 ## 7. Excel 비상 업데이트
 
 - 화면의 `Excel 비상 업데이트`에서 `.xlsx`를 선택한다.
-- `BeyondPack_Master` 시트가 있으면 우선 사용하고, 없으면 첫 시트를 사용한다.
+- `BeyondPack` 시트가 있으면 우선 사용한다. 기존 `BeyondPack_Master`도 호환하며, 둘 다 없으면 첫 시트를 사용한다.
 - Google Sheet와 동일한 열·검증·원자 교체 규칙을 적용한다.
 - 적용 전 관리자 확인창을 표시한다.
 - Excel 적용 후에도 Google Sheet 자동동기화 설정은 유지한다.
@@ -288,7 +288,7 @@ BeyondPack-2.2.0-Windows-x64-Setup.exe
 ### Phase 0 — 데이터 준비
 
 - [ ] 기존 `product` 탭 유지
-- [ ] `BeyondPack_Master` 탭 생성
+- [ ] `BeyondPack` 탭 확인
 - [ ] 복합키 기준 데이터 업로드
 - [ ] 편집자·승인자·작업자 역할 지정
 - [ ] 원가·매출·개인정보 제외 확인

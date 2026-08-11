@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
         value, accepted = QInputDialog.getText(
             self,
             "Google Sheet 설정",
-            "BeyondPack_Master 탭이 포함된 Google Sheet 주소를 붙여넣으세요.",
+            "BeyondPack 탭이 열린 Google Sheet 주소를 붙여넣으세요.",
             QLineEdit.Normal,
             current,
         )

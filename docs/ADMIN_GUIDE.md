@@ -2,7 +2,7 @@
 
 ## 시작 전 점검
 
-- `Sheet 설정`에 `BeyondPack_Master` 탭 주소가 저장되어 있는지 확인
+- `Sheet 설정`에 `BeyondPack` 탭 주소가 저장되어 있는지 확인
 - 상단에 상품DB 버전·건수·마지막 성공시간이 표시되는지 확인
 - 정상·미등록·비활성 FNSKU 각 1건 확인
 - 테스트 라벨과 프린터 용지/DPI 확인
@@ -13,7 +13,7 @@
 
 업데이트 순서는 `다운로드 → 필수 열 검사 → FNSKU+국가 중복 검사 → 필수값·버전 검사 → 새 SQLite 무결성 검사 → 기존 DB 백업 → 원자 교체`다. 어느 단계에서든 실패하면 기존 `products.db`를 그대로 사용한다.
 
-Google Sheet 장애 시 `Excel 비상 업데이트`로 `.xlsx`를 선택한다. `BeyondPack_Master` 시트가 있으면 그 시트를 사용하고, 없으면 첫 시트를 사용한다. Excel도 Google Sheet와 동일한 열과 검증 규칙을 따른다.
+Google Sheet 장애 시 `Excel 비상 업데이트`로 `.xlsx`를 선택한다. `BeyondPack` 시트를 우선 사용하며 기존 `BeyondPack_Master`도 호환한다. 둘 다 없으면 첫 시트를 사용한다. Excel도 Google Sheet와 동일한 열과 검증 규칙을 따른다.
 
 ## 데이터 파일
 
