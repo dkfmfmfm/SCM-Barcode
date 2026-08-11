@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "data_version": "DEMO-2026.08.11",
+  "products": [
+    {
+      "FNSKU": "X003ABC123",
+      "ItemCode": "A000000120",
+      "SKU": "US-AMZ-SEAWEED-12P",
+      "CountryCode": "US",
+      "CountryName": "미국",
+      "ProductName": "DONGWON YANGBAN SEAWEED 12 PACK",
+      "ProductNameEn": "DONGWON YANGBAN SEAWEED 12 PACK",
+      "AmazonAccount": "DEMO",
+      "Status": "Published",
+      "SourceModifiedAt": "2026-08-11T00:00:00Z",
+      "DataVersion": "DEMO-2026.08.11",
+      "SchemaVersion": 1
+    },
+    {
+      "FNSKU": "X004DEF456",
+      "ItemCode": "A000000230",
+      "SKU": "US-AMZ-TUNA-4P",
+      "CountryCode": "US",
+      "CountryName": "미국",
+      "ProductName": "DONGWON SPICY TUNA 4 PACK",
+      "ProductNameEn": "DONGWON SPICY TUNA 4 PACK",
+      "AmazonAccount": "DEMO",
+      "Status": "Published",
+      "SourceModifiedAt": "2026-08-11T00:00:00Z",
+      "DataVersion": "DEMO-2026.08.11",
+      "SchemaVersion": 1
+    }
+  ]
+}
+

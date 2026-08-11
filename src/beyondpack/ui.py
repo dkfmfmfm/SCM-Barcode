@@ -1,0 +1,657 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from decimal import Decimal
+from pathlib import Path
+from typing import Callable
+
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextDocument,
+    QVBoxLayout,
+    QWidget,
+)
+
+from . import __version__
+from .cache import ProductCacheRepository
+from .config import AppConfig
+from .diagnostics import create_diagnostic_bundle
+from .errors import BeyondPackError, PackagingValidationError
+from .exporter import export_job_xlsx
+from .labels import render_group_label
+from .models import BoxGroupInput, BoxItem, Product
+from .normalization import positive_decimal, positive_int
+from .packaging import PackagingRepository
+from .sources.base import ProductSource
+from .sync import ProductSyncService, SyncResult
+
+
+COLORS = {
+    "CURRENT": ("#E9F7EF", "#166534", "최신"),
+    "CACHED": ("#FFF7E6", "#9A5B00", "캐시 사용 중"),
+    "SYNCING": ("#EAF2FF", "#1D4ED8", "업데이트 중"),
+    "ERROR": ("#FDECEC", "#B91C1C", "오류"),
+    "NO_DATA": ("#FDECEC", "#B91C1C", "상품DB 없음"),
+}
+
+
+class SyncWorker(QObject):
+    finished = Signal(object)
+    login_required = Signal(str)
+
+    def __init__(
+        self,
+        source_factory: Callable[[Callable[[str], None]], ProductSource],
+        cache: ProductCacheRepository,
+        status_path: Path,
+        drop_threshold: float,
+    ):
+        super().__init__()
+        self.source_factory = source_factory
+        self.cache = cache
+        self.status_path = status_path
+        self.drop_threshold = drop_threshold
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            source = self.source_factory(self.login_required.emit)
+            result = ProductSyncService(
+                source, self.cache, self.status_path, self.drop_threshold
+            ).sync()
+        except Exception as exc:
+            info = self.cache.info()
+            result = SyncResult(
+                "CACHED" if info.product_count else "NO_DATA",
+                f"상품정보 업데이트를 시작할 수 없습니다. ({getattr(exc, 'code', 'BP-SYNC-000')}: {exc})",
+                info,
+                "",
+            )
+        self.finished.emit(result)
+
+
+class MainWindow(QMainWindow):
+    DRAFT_KEY = "current-packaging"
+
+    def __init__(
+        self,
+        config: AppConfig,
+        config_path: Path,
+        cache: ProductCacheRepository,
+        packaging: PackagingRepository,
+        source_factory: Callable[[Callable[[str], None]], ProductSource],
+    ):
+        super().__init__()
+        self.config = config
+        self.config_path = config_path
+        self.cache = cache
+        self.packaging = packaging
+        self.source_factory = source_factory
+        self.current_product: Product | None = None
+        self.items: list[BoxItem] = []
+        self.job_id: str | None = None
+        self.last_saved: tuple[dict, list[dict]] | None = None
+        self.sync_thread: QThread | None = None
+        self.cache_blocked = False
+
+        self.setWindowTitle(f"BeyondPack {__version__} · BEYOND EARTH")
+        self.setMinimumSize(1120, 760)
+        self.resize(1280, 860)
+        self._build_ui()
+        self._build_actions()
+        self._connect_autosave()
+        self._restore_draft()
+        self._show_initial_cache_state()
+        QTimer.singleShot(150, self.sync_now)
+
+    def _build_ui(self) -> None:
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title = QLabel("BEYOND PACK")
+        title.setObjectName("brandTitle")
+        subtitle = QLabel("FNSKU 기반 오프라인 우선 포장 작업")
+        subtitle.setObjectName("subtitle")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box)
+        header.addStretch()
+        header.addWidget(QLabel("작업자"))
+        self.operator_input = QLineEdit(config.operator_name)
+        self.operator_input.setPlaceholderText("이름 또는 사번")
+        self.operator_input.setMaximumWidth(180)
+        header.addWidget(self.operator_input)
+        self.update_button = QPushButton("F2  상품정보 업데이트")
+        self.update_button.clicked.connect(self.sync_now)
+        header.addWidget(self.update_button)
+        layout.addLayout(header)
+
+        self.sync_banner = QFrame()
+        self.sync_banner.setObjectName("syncBanner")
+        banner_layout = QHBoxLayout(self.sync_banner)
+        banner_layout.setContentsMargins(14, 9, 14, 9)
+        self.sync_state_label = QLabel()
+        self.sync_detail_label = QLabel()
+        self.sync_detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        banner_layout.addWidget(self.sync_state_label)
+        banner_layout.addWidget(self.sync_detail_label, 1)
+        layout.addWidget(self.sync_banner)
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        left = QVBoxLayout()
+        left.setSpacing(12)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        body.addLayout(left, 6)
+        body.addLayout(right, 4)
+
+        lookup_group = QGroupBox("1. 상품 스캔")
+        lookup_layout = QVBoxLayout(lookup_group)
+        scan_row = QHBoxLayout()
+        self.fnsku_input = QLineEdit()
+        self.fnsku_input.setPlaceholderText("FNSKU를 스캔하세요")
+        self.fnsku_input.setClearButtonEnabled(True)
+        self.fnsku_input.setMinimumHeight(48)
+        self.fnsku_input.returnPressed.connect(self.lookup_product)
+        scan_button = QPushButton("조회")
+        scan_button.setMinimumHeight(48)
+        scan_button.clicked.connect(self.lookup_product)
+        scan_row.addWidget(self.fnsku_input, 1)
+        scan_row.addWidget(scan_button)
+        lookup_layout.addLayout(scan_row)
+
+        product_grid = QGridLayout()
+        self.product_fields: dict[str, QLineEdit] = {}
+        specs = [
+            ("product_name", "품목명", 0, 0, 1, 3),
+            ("item_code", "품목코드", 1, 0, 1, 1),
+            ("sku", "SKU", 1, 1, 1, 1),
+            ("fnsku", "FNSKU", 1, 2, 1, 1),
+            ("country_name", "국가명", 2, 0, 1, 1),
+        ]
+        for key, label, row, column, row_span, col_span in specs:
+            box = QVBoxLayout()
+            caption = QLabel(label)
+            caption.setObjectName("fieldCaption")
+            value = QLineEdit()
+            value.setReadOnly(True)
+            value.setObjectName("readonlyField")
+            value.setMinimumHeight(38)
+            self.product_fields[key] = value
+            box.addWidget(caption)
+            box.addWidget(value)
+            product_grid.addLayout(box, row, column, row_span, col_span)
+        lookup_layout.addLayout(product_grid)
+
+        add_row = QHBoxLayout()
+        add_row.addWidget(QLabel("박스당 상품수량"))
+        self.qty_input = QSpinBox()
+        self.qty_input.setRange(1, 999999)
+        self.qty_input.setValue(1)
+        self.qty_input.setSuffix(" EA")
+        self.qty_input.setMinimumHeight(38)
+        add_row.addWidget(self.qty_input)
+        self.add_item_button = QPushButton("합포 구성에 추가")
+        self.add_item_button.setObjectName("primaryButton")
+        self.add_item_button.setMinimumHeight(38)
+        self.add_item_button.clicked.connect(self.add_current_item)
+        add_row.addWidget(self.add_item_button, 1)
+        lookup_layout.addLayout(add_row)
+        left.addWidget(lookup_group)
+
+        items_group = QGroupBox("2. 박스 구성품")
+        items_layout = QVBoxLayout(items_group)
+        self.items_table = QTableWidget(0, 6)
+        self.items_table.setHorizontalHeaderLabels(["FNSKU", "품목코드", "SKU", "국가", "품목명", "EA/BOX"])
+        self.items_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.items_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.items_table.verticalHeader().setVisible(False)
+        header_view = self.items_table.horizontalHeader()
+        for col in range(6):
+            header_view.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        header_view.setSectionResizeMode(4, QHeaderView.Stretch)
+        items_layout.addWidget(self.items_table)
+        remove_button = QPushButton("선택 상품 제거")
+        remove_button.clicked.connect(self.remove_selected_item)
+        items_layout.addWidget(remove_button, alignment=Qt.AlignRight)
+        left.addWidget(items_group, 1)
+
+        package_group = QGroupBox("3. 포장정보 입력")
+        form = QFormLayout(package_group)
+        form.setVerticalSpacing(13)
+        self.box_count = QSpinBox()
+        self.box_count.setRange(1, 99999)
+        self.box_count.setSuffix(" BOX")
+        self.weight = self._decimal_box(" kg / BOX", 3, self.config.weight_max_kg)
+        self.length = self._decimal_box(" cm", 2, self.config.dimension_max_cm)
+        self.width = self._decimal_box(" cm", 2, self.config.dimension_max_cm)
+        self.height = self._decimal_box(" cm", 2, self.config.dimension_max_cm)
+        form.addRow("박스수량", self.box_count)
+        form.addRow("무게", self.weight)
+        form.addRow("가로", self.length)
+        form.addRow("세로", self.width)
+        form.addRow("높이", self.height)
+        right.addWidget(package_group)
+
+        self.confirm_button = QPushButton("Ctrl+Enter  박스 확정")
+        self.confirm_button.setObjectName("confirmButton")
+        self.confirm_button.setMinimumHeight(54)
+        self.confirm_button.clicked.connect(self.confirm_box_group)
+        right.addWidget(self.confirm_button)
+
+        utility_group = QGroupBox("작업 도구")
+        utility_layout = QGridLayout(utility_group)
+        reset_button = QPushButton("F4  현재 입력 초기화")
+        reset_button.clicked.connect(self.reset_current)
+        print_button = QPushButton("F8  마지막 라벨 재출력")
+        print_button.clicked.connect(self.print_last_labels)
+        export_button = QPushButton("작업 Excel 저장")
+        export_button.clicked.connect(self.export_current_job)
+        diagnostic_button = QPushButton("관리자 진단파일 생성")
+        diagnostic_button.clicked.connect(self.create_diagnostics)
+        utility_layout.addWidget(reset_button, 0, 0)
+        utility_layout.addWidget(print_button, 0, 1)
+        utility_layout.addWidget(export_button, 1, 0)
+        utility_layout.addWidget(diagnostic_button, 1, 1)
+        right.addWidget(utility_group)
+        right.addStretch()
+
+        self.next_action = QLabel("다음 행동: FNSKU를 스캔하세요.")
+        self.next_action.setObjectName("nextAction")
+        self.next_action.setWordWrap(True)
+        right.addWidget(self.next_action)
+        layout.addLayout(body, 1)
+
+        self.setCentralWidget(root)
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage("준비")
+        self.setStyleSheet(self._stylesheet())
+
+    def _decimal_box(self, suffix: str, decimals: int, maximum: float) -> QDoubleSpinBox:
+        box = QDoubleSpinBox()
+        box.setRange(0, maximum)
+        box.setDecimals(decimals)
+        box.setSingleStep(0.1)
+        box.setSuffix(suffix)
+        box.setMinimumHeight(40)
+        return box
+
+    def _build_actions(self) -> None:
+        shortcuts = [
+            ("sync", "F2", self.sync_now),
+            ("reset", "F4", self.reset_current),
+            ("print", "F8", self.print_last_labels),
+            ("confirm", "Ctrl+Return", self.confirm_box_group),
+        ]
+        for name, key, callback in shortcuts:
+            action = QAction(name, self)
+            action.setShortcut(QKeySequence(key))
+            action.triggered.connect(callback)
+            self.addAction(action)
+
+    def _connect_autosave(self) -> None:
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.setSingleShot(True)
+        self.autosave_timer.setInterval(350)
+        self.autosave_timer.timeout.connect(self._save_draft)
+        for widget in (self.box_count, self.weight, self.length, self.width, self.height):
+            widget.valueChanged.connect(lambda _value: self.autosave_timer.start())
+
+    def _show_initial_cache_state(self) -> None:
+        info = self.cache.info()
+        if info.product_count:
+            age = self.cache.cache_age_hours()
+            detail = f"DB {info.data_version or '-'} · {info.product_count:,}개 · 마지막 성공 {info.synced_at or '-'}"
+            if age is not None and age > self.config.cache_max_age_hours:
+                self.cache_blocked = True
+                self._set_sync_state("ERROR", detail + " · 허용기간 초과, 관리자 확인 필요")
+            else:
+                self.cache_blocked = False
+                self._set_sync_state("CACHED", detail)
+        else:
+            self.cache_blocked = True
+            self._set_sync_state("NO_DATA", "처음 사용하려면 상품정보 업데이트가 필요합니다.")
+
+    @Slot()
+    def sync_now(self) -> None:
+        if self.sync_thread and self.sync_thread.isRunning():
+            self.statusBar().showMessage("상품정보 업데이트가 이미 진행 중입니다.", 3000)
+            return
+        self._set_sync_state("SYNCING", "SharePoint/상품 소스에서 최신 데이터를 확인하고 있습니다.")
+        self.update_button.setEnabled(False)
+        thread = QThread(self)
+        worker = SyncWorker(
+            self.source_factory,
+            self.cache,
+            self.config.resolved_data_dir / "sync-status.json",
+            self.config.large_drop_threshold,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.login_required.connect(self._show_login_message)
+        worker.finished.connect(self._sync_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._sync_thread_finished)
+        self.sync_thread = thread
+        self._sync_worker = worker
+        thread.start()
+
+    @Slot(str)
+    def _show_login_message(self, message: str) -> None:
+        QMessageBox.information(self, "Microsoft 로그인", message)
+
+    @Slot(object)
+    def _sync_finished(self, result: SyncResult) -> None:
+        self.update_button.setEnabled(True)
+        age = self.cache.cache_age_hours()
+        self.cache_blocked = result.state == "NO_DATA" or (
+            result.state != "CURRENT"
+            and age is not None
+            and age > self.config.cache_max_age_hours
+        )
+        display_state = "ERROR" if self.cache_blocked and result.state == "CACHED" else result.state
+        self._set_sync_state(
+            display_state,
+            f"{result.message} · DB {result.cache.data_version or '-'} · {result.cache.product_count:,}개",
+        )
+        if result.state == "CURRENT":
+            self._success("상품정보 업데이트 완료. FNSKU를 스캔하세요.")
+        else:
+            self._error(result.message, beep=False)
+        self.fnsku_input.setFocus()
+
+    @Slot()
+    def _sync_thread_finished(self) -> None:
+        self.sync_thread = None
+        if hasattr(self, "_sync_worker"):
+            del self._sync_worker
+
+    def _set_sync_state(self, state: str, detail: str) -> None:
+        background, foreground, title = COLORS.get(state, COLORS["ERROR"])
+        self.sync_banner.setStyleSheet(
+            f"QFrame#syncBanner {{background:{background}; border:1px solid {foreground}; border-radius:7px;}}"
+        )
+        self.sync_state_label.setText(f"● {title}")
+        self.sync_state_label.setStyleSheet(f"font-weight:700; color:{foreground};")
+        self.sync_detail_label.setText(detail)
+        self.sync_detail_label.setStyleSheet(f"color:{foreground};")
+
+    @Slot()
+    def lookup_product(self) -> None:
+        if self.cache_blocked:
+            self._error(
+                "상품DB가 없거나 허용된 사용기간을 초과했습니다. 상품정보를 업데이트하세요. [BP-CACHE-001]"
+            )
+            return
+        try:
+            product = self.cache.lookup(self.fnsku_input.text())
+        except BeyondPackError as exc:
+            self.current_product = None
+            self._clear_product_fields()
+            self._error(f"{exc} [{exc.code}] 상품정보 업데이트 후 다시 스캔하세요.")
+            self.fnsku_input.selectAll()
+            self.fnsku_input.setFocus()
+            return
+        self.current_product = product
+        for key, widget in self.product_fields.items():
+            widget.setText(str(getattr(product, key)))
+        self.qty_input.setValue(1)
+        self._success("상품 확인 완료. 박스당 상품수량을 입력하고 합포 구성에 추가하세요.")
+        self.qty_input.setFocus()
+        self.qty_input.selectAll()
+
+    @Slot()
+    def add_current_item(self) -> None:
+        if not self.current_product:
+            self._error("먼저 FNSKU를 스캔하세요. [BP-UX-001]")
+            self.fnsku_input.setFocus()
+            return
+        qty = self.qty_input.value()
+        existing = next((index for index, item in enumerate(self.items) if item.fnsku == self.current_product.normalized_fnsku), None)
+        if existing is not None:
+            answer = QMessageBox.question(
+                self,
+                "중복 스캔 확인",
+                "같은 FNSKU가 이미 있습니다. 기존 수량에 더할까요?",
+            )
+            if answer != QMessageBox.Yes:
+                self.fnsku_input.selectAll()
+                self.fnsku_input.setFocus()
+                return
+            old = self.items[existing]
+            self.items[existing] = BoxItem(**{**asdict(old), "qty_per_box": old.qty_per_box + qty})
+        else:
+            self.items.append(BoxItem.from_product(self.current_product, qty))
+        self._refresh_items_table()
+        self._clear_scan(keep_message=True)
+        self._success("구성품에 추가했습니다. 다음 FNSKU를 스캔하거나 포장정보를 입력하세요.")
+        self._save_draft()
+
+    def remove_selected_item(self) -> None:
+        row = self.items_table.currentRow()
+        if row < 0:
+            self._error("제거할 상품 행을 선택하세요. [BP-UX-002]", beep=False)
+            return
+        self.items.pop(row)
+        self._refresh_items_table()
+        self._save_draft()
+        self.fnsku_input.setFocus()
+
+    def _refresh_items_table(self) -> None:
+        self.items_table.setRowCount(len(self.items))
+        for row, item in enumerate(self.items):
+            values = [item.fnsku, item.item_code, item.sku, item.country_name, item.product_name, str(item.qty_per_box)]
+            for column, value in enumerate(values):
+                self.items_table.setItem(row, column, QTableWidgetItem(value))
+
+    @Slot()
+    def confirm_box_group(self) -> None:
+        try:
+            if not self.items:
+                raise PackagingValidationError("박스에 상품을 한 개 이상 추가하세요.")
+            operator_name = self.operator_input.text().strip()
+            if not operator_name:
+                raise PackagingValidationError("작업자 이름 또는 사번을 입력하세요.")
+            value = BoxGroupInput(
+                box_count=positive_int(self.box_count.value(), "박스수량"),
+                weight_kg=positive_decimal(self.weight.value(), "무게", Decimal(str(self.config.weight_max_kg))),
+                length_cm=positive_decimal(self.length.value(), "가로", Decimal(str(self.config.dimension_max_cm))),
+                width_cm=positive_decimal(self.width.value(), "세로", Decimal(str(self.config.dimension_max_cm))),
+                height_cm=positive_decimal(self.height.value(), "높이", Decimal(str(self.config.dimension_max_cm))),
+                items=tuple(self.items),
+            )
+            if not self.job_id:
+                self.job_id = self.packaging.create_job(
+                    operator_name,
+                    self.cache.info().data_version,
+                    __version__,
+                )
+            saved = self.packaging.save_box_group(
+                self.job_id, value, operator_name
+            )
+            self.last_saved = self.packaging.last_group(self.job_id)
+        except BeyondPackError as exc:
+            self._error(f"{exc} [{exc.code}]")
+            return
+        self.packaging.clear_draft(self.DRAFT_KEY)
+        self.items.clear()
+        self._refresh_items_table()
+        self._clear_scan(keep_message=True)
+        self.box_count.setValue(1)
+        for widget in (self.weight, self.length, self.width, self.height):
+            widget.setValue(0)
+        self._success(
+            f"박스 {saved.box_start_no}~{saved.box_end_no} 저장 완료. 라벨을 출력하거나 다음 작업을 스캔하세요."
+        )
+        self.fnsku_input.setFocus()
+
+    @Slot()
+    def reset_current(self) -> None:
+        if self.items or any(w.value() for w in (self.weight, self.length, self.width, self.height)):
+            if QMessageBox.question(self, "입력 초기화", "현재 입력을 모두 지울까요?") != QMessageBox.Yes:
+                return
+        self.items.clear()
+        self._refresh_items_table()
+        self._clear_scan(keep_message=True)
+        self.box_count.setValue(1)
+        for widget in (self.weight, self.length, self.width, self.height):
+            widget.setValue(0)
+        self.packaging.clear_draft(self.DRAFT_KEY)
+        self.next_action.setText("다음 행동: FNSKU를 스캔하세요.")
+        self.fnsku_input.setFocus()
+
+    @Slot()
+    def print_last_labels(self) -> None:
+        if not self.last_saved and self.job_id:
+            self.last_saved = self.packaging.last_group(self.job_id)
+        if not self.last_saved:
+            self._error("재출력할 저장된 라벨이 없습니다. [BP-PRINT-001]", beep=False)
+            return
+        group, items = self.last_saved
+        printer = QPrinter(QPrinter.HighResolution)
+        dialog = QPrintDialog(printer, self)
+        if dialog.exec() != QPrintDialog.Accepted:
+            return
+        start = int(group["box_start_no"])
+        count = int(group["box_count"])
+        document = QTextDocument()
+        for offset in range(count):
+            document.setHtml(render_group_label(group, items, start + offset))
+            document.print_(printer)
+        self._success(f"라벨 {count}장을 프린터로 전송했습니다.")
+
+    @Slot()
+    def export_current_job(self) -> None:
+        if not self.job_id:
+            self._error("Excel로 저장할 포장 작업이 없습니다. [BP-EXPORT-001]", beep=False)
+            return
+        suggested = str(Path.home() / "Documents" / f"BeyondPack-{self.job_id[:8]}.xlsx")
+        filename, _ = QFileDialog.getSaveFileName(self, "포장실적 Excel 저장", suggested, "Excel (*.xlsx)")
+        if not filename:
+            return
+        try:
+            count = export_job_xlsx(self.packaging, self.job_id, Path(filename))
+        except Exception as exc:
+            self._error(f"Excel 저장 실패: {exc} [BP-EXPORT-002]")
+            return
+        self._success(f"Excel 저장 완료: {count}개 구성품 행")
+
+    @Slot()
+    def create_diagnostics(self) -> None:
+        try:
+            path = create_diagnostic_bundle(self.config.resolved_data_dir, Path.home() / "Desktop")
+        except Exception as exc:
+            self._error(f"진단파일 생성 실패: {exc} [BP-DIAG-001]")
+            return
+        QMessageBox.information(self, "진단파일 생성 완료", f"인증정보를 제외한 진단파일을 만들었습니다.\n{path}")
+
+    def _save_draft(self) -> None:
+        payload = {
+            "items": [asdict(item) for item in self.items],
+            "box_count": self.box_count.value(),
+            "weight": self.weight.value(),
+            "length": self.length.value(),
+            "width": self.width.value(),
+            "height": self.height.value(),
+        }
+        if self.items or any(payload[key] for key in ("weight", "length", "width", "height")):
+            self.packaging.save_draft(self.DRAFT_KEY, payload)
+
+    def _restore_draft(self) -> None:
+        draft = self.packaging.load_draft(self.DRAFT_KEY)
+        if not draft:
+            return
+        answer = QMessageBox.question(
+            self,
+            "미완료 작업 복구",
+            "이전에 저장하지 못한 포장 입력이 있습니다. 복구할까요?",
+        )
+        if answer != QMessageBox.Yes:
+            self.packaging.clear_draft(self.DRAFT_KEY)
+            return
+        try:
+            self.items = [BoxItem(**item) for item in draft.get("items", [])]
+            self.box_count.setValue(int(draft.get("box_count", 1)))
+            self.weight.setValue(float(draft.get("weight", 0)))
+            self.length.setValue(float(draft.get("length", 0)))
+            self.width.setValue(float(draft.get("width", 0)))
+            self.height.setValue(float(draft.get("height", 0)))
+            self._refresh_items_table()
+            self.next_action.setText("복구 완료: 구성품과 포장정보를 확인한 뒤 박스를 확정하세요.")
+        except Exception:
+            self.packaging.clear_draft(self.DRAFT_KEY)
+
+    def _clear_scan(self, keep_message: bool = False) -> None:
+        self.current_product = None
+        self.fnsku_input.clear()
+        self._clear_product_fields()
+        self.qty_input.setValue(1)
+        if not keep_message:
+            self.next_action.setText("다음 행동: FNSKU를 스캔하세요.")
+
+    def _clear_product_fields(self) -> None:
+        for field in self.product_fields.values():
+            field.clear()
+
+    def _success(self, message: str) -> None:
+        QApplication.beep()
+        self.next_action.setStyleSheet("background:#E9F7EF;color:#166534;border:1px solid #86C89A;border-radius:7px;padding:12px;font-weight:700;")
+        self.next_action.setText("정상 · " + message)
+        self.statusBar().showMessage(message, 5000)
+
+    def _error(self, message: str, beep: bool = True) -> None:
+        if beep:
+            QApplication.beep()
+        self.next_action.setStyleSheet("background:#FDECEC;color:#B91C1C;border:1px solid #E6A2A2;border-radius:7px;padding:12px;font-weight:700;")
+        self.next_action.setText("확인 필요 · " + message)
+        self.statusBar().showMessage(message, 8000)
+
+    @staticmethod
+    def _stylesheet() -> str:
+        return """
+        QMainWindow, QWidget { background: #F7F5F1; color: #0B1F3A; font-family: 'Pretendard', 'Malgun Gothic'; font-size: 14px; }
+        QLabel#brandTitle { font-size: 25px; font-weight: 800; letter-spacing: 3px; }
+        QLabel#subtitle { color: #667085; }
+        QGroupBox { background: white; border: 1px solid #DDD8CE; border-radius: 9px; margin-top: 13px; padding: 13px; font-weight: 700; }
+        QGroupBox::title { subcontrol-origin: margin; left: 13px; padding: 0 5px; }
+        QLineEdit, QSpinBox, QDoubleSpinBox { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 7px; font-size: 16px; }
+        QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #2563EB; }
+        QLineEdit#readonlyField { background: #F1F4F8; color: #0B1F3A; font-weight: 650; }
+        QLabel#fieldCaption { color: #667085; font-size: 12px; }
+        QPushButton { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 9px 13px; font-weight: 650; }
+        QPushButton:hover { background: #F1EEE8; }
+        QPushButton#primaryButton { background: #0B1F3A; color: white; border: 0; }
+        QPushButton#confirmButton { background: #2563EB; color: white; border: 0; font-size: 17px; }
+        QPushButton:disabled { background: #E5E7EB; color: #9CA3AF; }
+        QTableWidget { background: white; border: 1px solid #DDD8CE; gridline-color: #E8E3DA; alternate-background-color: #FAF8F4; }
+        QHeaderView::section { background: #0B1F3A; color: white; padding: 8px; border: 0; font-weight: 700; }
+        QLabel#nextAction { background:#EAF2FF; color:#1D4ED8; border:1px solid #9BBDF7; border-radius:7px; padding:12px; font-weight:700; }
+        """

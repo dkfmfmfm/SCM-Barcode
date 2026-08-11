@@ -1,0 +1,13 @@
+{
+  "source_type": "json",
+  "source_json_path": "src/beyondpack/resources/sample-products.json",
+  "data_dir": "data/demo",
+  "operator_name": "교육용 작업자",
+  "cache_max_age_hours": 72,
+  "large_drop_threshold": 0.2,
+  "scanner_terminator": "enter",
+  "weight_max_kg": 1000.0,
+  "dimension_max_cm": 500.0,
+  "sharepoint": {}
+}
+
