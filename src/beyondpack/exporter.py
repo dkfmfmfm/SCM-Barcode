@@ -24,7 +24,7 @@ HEADERS = [
     "품목코드",
     "SKU",
     "국가코드",
-    "국가명",
+    "국가",
     "품목명",
     "상품수량(EA/BOX)",
     "원본수정시각",
@@ -87,4 +87,3 @@ def export_job_xlsx(repo: PackagingRepository, job_id: str, path: Path) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
     return len(rows)
-
