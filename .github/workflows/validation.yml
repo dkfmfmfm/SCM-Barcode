@@ -1,4 +1,4 @@
-name: Documentation validation
+name: Documentation and code validation
 
 on:
   pull_request:
@@ -21,16 +21,46 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           test -s PLAN.MD
           test -s RESEARCH.MD
-
           grep -Fq "SharePoint" PLAN.MD
           grep -Fq "FNSKU" PLAN.MD
-          grep -Fq "SKU" PLAN.MD
           grep -Fq "품목코드" PLAN.MD
           grep -Fq "국가명" PLAN.MD
           grep -Fq "오프라인" PLAN.MD
           grep -Fq "포장" PLAN.MD
-
           grep -Fq "PLAN.MD" RESEARCH.MD
+          test -s docs/SHAREPOINT_SETUP.md
+          test -s scripts/create-sharepoint-list.ps1
+          test -s scripts/import-sharepoint-products.ps1
+
+      - name: Run core tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile Python sources
+        run: python -m compileall -q src tests beyondpack_entry.py run.py
+
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @(
+            "scripts/create-sharepoint-list.ps1",
+            "scripts/import-sharepoint-products.ps1",
+            "scripts/build-windows.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "${file}: $($_.Message)" }
+              $failed = $true
+            }
+          }
+          if ($failed) { throw "PowerShell syntax validation failed." }

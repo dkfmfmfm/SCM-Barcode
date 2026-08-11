@@ -1,0 +1,21 @@
+{
+  "source_type": "sharepoint",
+  "source_json_path": "sample/products.json",
+  "data_dir": "",
+  "operator_name": "",
+  "cache_max_age_hours": 72,
+  "large_drop_threshold": 0.2,
+  "scanner_terminator": "enter",
+  "weight_max_kg": 1000.0,
+  "dimension_max_cm": 500.0,
+  "sharepoint": {
+    "tenant_id": "YOUR_ENTRA_TENANT_ID",
+    "client_id": "YOUR_PUBLIC_CLIENT_APP_ID",
+    "site_id": "YOUR_SHAREPOINT_SITE_ID",
+    "list_id": "YOUR_PRODUCT_PUBLISHED_LIST_ID",
+    "authority_host": "https://login.microsoftonline.com",
+    "graph_base_url": "https://graph.microsoft.com/v1.0",
+    "scopes": ["Sites.Read.All"]
+  }
+}
+
