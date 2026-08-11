@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         cache: ProductCacheRepository,
         packaging: PackagingRepository,
         source_factory: Callable[[Callable[[str], None]], ProductSource],
+        auto_sync: bool = True,
     ):
         super().__init__()
         self.config = config
@@ -125,7 +126,8 @@ class MainWindow(QMainWindow):
         self._refresh_country_options()
         self._restore_draft()
         self._show_initial_cache_state()
-        QTimer.singleShot(150, self.sync_now)
+        if auto_sync:
+            QTimer.singleShot(150, self.sync_now)
 
     def _build_ui(self) -> None:
         root = QWidget()
