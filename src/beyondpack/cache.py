@@ -8,13 +8,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .errors import DataValidationError, DuplicateFnskuError, InactiveProductError, ProductNotFoundError
+from .errors import (
+    CountrySelectionRequiredError,
+    DataValidationError,
+    DuplicateProductKeyError,
+    InactiveProductError,
+    ProductNotFoundError,
+)
 from .models import Product, utc_now_iso
-from .normalization import normalize_fnsku
+from .normalization import normalize_country_code, normalize_fnsku
 from .sources.base import ProductBatch
 
 
-EXPECTED_SCHEMA_VERSION = 1
+EXPECTED_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,10 +62,28 @@ class ProductCacheRepository:
             self.new_path.unlink(missing_ok=True)
         return CacheInfo(len(products), batch.data_version, batch.schema_version, synced_at)
 
-    def lookup(self, fnsku: object) -> Product:
+    def available_countries(self) -> tuple[tuple[str, str], ...]:
+        if not self.db_path.exists():
+            return ()
+        with self._connect(self.db_path, read_only=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT country_code, MAX(country_name) AS country_name
+                FROM products
+                WHERE lower(status) = 'published'
+                GROUP BY country_code
+                ORDER BY country_code
+                """
+            ).fetchall()
+        return tuple((str(row["country_code"]), str(row["country_name"])) for row in rows)
+
+    def lookup(self, fnsku: object, country_code: object) -> Product:
         key = normalize_fnsku(fnsku)
+        country = normalize_country_code(country_code)
         if not key:
             raise ProductNotFoundError("FNSKU를 스캔하거나 입력하세요.")
+        if not country:
+            raise CountrySelectionRequiredError("먼저 작업 국가를 선택하세요.")
         if not self.db_path.exists():
             raise ProductNotFoundError("사용할 상품DB가 없습니다. 상품정보를 업데이트하세요.")
         with self._connect(self.db_path, read_only=True) as conn:
@@ -67,12 +91,25 @@ class ProductCacheRepository:
                 """
                 SELECT fnsku, item_code, sku, country_code, country_name,
                        product_name, product_name_en, amazon_account, status,
-                       source_modified_at, data_version, schema_version
-                FROM products WHERE normalized_fnsku = ?
+                       source_modified_at, data_version, schema_version, lookup_key
+                FROM products WHERE normalized_fnsku = ? AND country_code = ?
+                """,
+                (key, country),
+            ).fetchone()
+            available = conn.execute(
+                """
+                SELECT country_code FROM products
+                WHERE normalized_fnsku = ? AND lower(status) = 'published'
+                ORDER BY country_code
                 """,
                 (key,),
-            ).fetchone()
+            ).fetchall()
         if row is None:
+            if available:
+                codes = ", ".join(str(item["country_code"]) for item in available)
+                raise ProductNotFoundError(
+                    f"{country} 국가에는 등록되지 않은 FNSKU입니다. 등록 국가: {codes}"
+                )
             raise ProductNotFoundError(
                 "등록되지 않은 FNSKU입니다. 상품정보를 업데이트하거나 관리자에게 문의하세요."
             )
@@ -117,17 +154,20 @@ class ProductCacheRepository:
         duplicates: set[str] = set()
         missing: list[str] = []
         for product in products:
-            key = product.normalized_fnsku
+            key = product.computed_lookup_key
             if key in seen:
                 duplicates.add(key)
             seen.add(key)
-            required = {"FNSKU": key}
+            required = {
+                "FNSKU": product.normalized_fnsku,
+                "국가코드": product.normalized_country_code,
+                "LookupKey": product.lookup_key,
+            }
             if product.status.casefold() == "published":
                 required.update(
                     {
                         "품목코드": product.item_code,
                         "SKU": product.sku,
-                        "국가코드": product.country_code,
                         "국가명": product.country_name,
                         "품목명": product.product_name,
                     }
@@ -139,9 +179,11 @@ class ProductCacheRepository:
                 missing.append(f"{key}: 스키마 버전 불일치")
             if product.data_version != batch.data_version:
                 missing.append(f"{key}: 데이터 버전 불일치")
+            if product.lookup_key.strip().upper() != key:
+                missing.append(f"{key}: LookupKey 불일치 ({product.lookup_key or '빈 값'})")
         if duplicates:
             sample = ", ".join(sorted(duplicates)[:10])
-            raise DuplicateFnskuError(f"동일 FNSKU가 2건 이상 있습니다: {sample}")
+            raise DuplicateProductKeyError(f"동일 FNSKU+국가가 2건 이상 있습니다: {sample}")
         if missing:
             raise DataValidationError("필수 상품정보가 누락되었습니다: " + "; ".join(missing[:10]))
         return products
@@ -169,7 +211,7 @@ class ProductCacheRepository:
                 );
                 CREATE TABLE products (
                     fnsku TEXT NOT NULL,
-                    normalized_fnsku TEXT NOT NULL UNIQUE,
+                    normalized_fnsku TEXT NOT NULL,
                     item_code TEXT NOT NULL,
                     sku TEXT NOT NULL,
                     country_code TEXT NOT NULL,
@@ -180,22 +222,25 @@ class ProductCacheRepository:
                     status TEXT NOT NULL,
                     source_modified_at TEXT NOT NULL DEFAULT '',
                     data_version TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL
+                    schema_version INTEGER NOT NULL,
+                    lookup_key TEXT NOT NULL UNIQUE
                 );
-                CREATE UNIQUE INDEX idx_products_fnsku ON products(normalized_fnsku);
+                CREATE INDEX idx_products_fnsku ON products(normalized_fnsku);
+                CREATE INDEX idx_products_country ON products(country_code);
+                CREATE UNIQUE INDEX idx_products_lookup_key ON products(lookup_key);
                 """
             )
             conn.executemany(
                 """
-                INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO products VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
-                        p.fnsku,
+                        p.normalized_fnsku,
                         p.normalized_fnsku,
                         p.item_code,
                         p.sku,
-                        p.country_code,
+                        p.normalized_country_code,
                         p.country_name,
                         p.product_name,
                         p.product_name_en,
@@ -204,6 +249,7 @@ class ProductCacheRepository:
                         p.source_modified_at,
                         p.data_version,
                         p.schema_version,
+                        p.computed_lookup_key,
                     )
                     for p in products
                 ],
