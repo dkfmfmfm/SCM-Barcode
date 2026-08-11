@@ -3,6 +3,19 @@
 > 작성일: 2026-08-11  
 > 대상: BEYOND EARTH 품목코드 관리 시스템(`index.html`) 및 BeyondPack v1.4  
 > 목적: 현재의 품목·포장 도구를 향후 대형 물류창고에서도 사용할 수 있는 입출고·재고 실행 체계로 발전시키기 위한 조사와 요구사항 정의
+> 관련 문서: `PLAN.MD`
+
+---
+
+## 문서 지위와 적용 원칙
+
+이 문서는 프로그램의 설계 판단, 기술 선택, 보안·데이터 기준과 중장기 확장 방향을 결정하는 공식 연구 기준이다.
+
+- 현재 1차 개발의 구체적인 필수 기능·테스트·인수 기준은 `PLAN.MD`를 따른다.
+- 이 문서의 WMS 기능 전체를 1차 BeyondPack 개선에 한꺼번에 구현하지 않는다.
+- `PLAN.MD`와 충돌하면 현재 개발에는 `PLAN.MD`가 우선하며, 중장기 구조 변경에는 본 문서의 원칙을 검토한다.
+- 요구사항이나 아키텍처가 변경되면 관련 코드, `PLAN.MD`, `RESEARCH.MD`를 같은 PR에서 갱신한다.
+- 중요한 구현 결정은 근거와 영향범위를 PR 또는 ADR에 남긴다.
 
 ---
 
@@ -1093,4 +1106,3 @@ flowchart TD
 - [GS1 DataMatrix Guideline](https://www.gs1.org/standards/gs1-datamatrix-guideline/25)
 - [GS1 Barcode Verification Guidelines](https://ref.gs1.org/guidelines/barcode-verification/)
 - [GS1 EPCIS](https://www.gs1.org/standards/epcis)
-
