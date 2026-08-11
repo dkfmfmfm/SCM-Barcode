@@ -13,22 +13,18 @@ from .errors import ConfigurationError
 from .packaging import PackagingRepository
 from .sources.base import ProductSource
 from .sources.json_source import JsonProductSource
-from .sources.sharepoint import SharePointProductSource
+from .sources.google_sheets import GoogleSheetsProductSource
 
 
 def build_source_factory(
     config: AppConfig, config_path: Path
 ) -> Callable[[Callable[[str], None]], ProductSource]:
     def factory(login_notifier: Callable[[str], None]) -> ProductSource:
-        if config.source_type == "sharepoint":
-            return SharePointProductSource(
-                config.sharepoint,
-                config.resolved_data_dir / "msal-token.cache",
-                login_notifier,
-            )
+        if config.source_type == "google_sheets":
+            return GoogleSheetsProductSource(config.google_sheets)
         if not config.source_json_path.strip():
             raise ConfigurationError(
-                "상품 소스가 설정되지 않았습니다. config.json에 SharePoint 또는 JSON 경로를 지정하세요."
+                "상품 소스가 설정되지 않았습니다. Google Sheet 주소 또는 JSON 경로를 지정하세요."
             )
         configured = Path(config.source_json_path).expanduser()
         if configured.is_absolute():
