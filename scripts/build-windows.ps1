@@ -18,7 +18,8 @@ if (-not (Test-Path ".venv")) {
 }
 
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
-& .\.venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+& .\.venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller pillow
+& .\.venv\Scripts\python.exe .\scripts\create-icon.py .\build-resources\BeyondPack.ico
 
 $mode = if ($OneFile) { "onefile" } else { "portable" }
 $arguments = @(
@@ -27,7 +28,7 @@ $arguments = @(
     "--windowed",
     "--noupx",
     "--name", "BeyondPack",
-    "--collect-all", "msal",
+    "--icon", "build-resources\BeyondPack.ico",
     "--add-data", "src\beyondpack\resources\sample-products.json;beyondpack\resources",
     "--paths", "src",
     "--distpath", "dist\$mode",
