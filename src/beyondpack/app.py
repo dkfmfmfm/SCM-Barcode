@@ -188,7 +188,7 @@ def _self_test_labels(output: Path) -> None:
     printer.setOutputFileName(str(output))
     apply_label_page(printer, label)
     numbers = box_numbers(group["box_start_no"], group["box_count"])
-    print_box_labels(printer, group, items, numbers)
+    print_box_labels(printer, group, items, numbers, label)
     del printer
 
     payload = output.read_bytes()

@@ -35,6 +35,21 @@ class LabelSettings:
     margin_mm: float = 1.5
     auto_print: bool = True
 
+    # 드라이버가 보고하는 용지 크기의 반올림 오차 허용치(mm).
+    PAGE_TOLERANCE_MM = 1.0
+
+    def matches_page(self, width_mm: float, height_mm: float) -> bool:
+        """프린터에 실제로 적용된 용지가 설정한 라벨 크기와 같은지 판정한다.
+
+        Windows 드라이버에 해당 사용자 정의 용지가 없으면 크기 지정이 조용히
+        실패하고 A4가 유지된다. 그 상태로 인쇄하면 라벨이 잘리고 빈 라벨이
+        함께 배출되므로 인쇄 전에 이 검사로 걸러낸다.
+        """
+        return (
+            abs(width_mm - self.width_mm) <= self.PAGE_TOLERANCE_MM
+            and abs(height_mm - self.height_mm) <= self.PAGE_TOLERANCE_MM
+        )
+
 
 @dataclass(slots=True)
 class AppConfig:
