@@ -7,6 +7,7 @@ from .packaging import PackagingRepository
 
 
 HEADERS = [
+    "출고건",
     "작업ID",
     "작업일시",
     "작업자",
@@ -31,6 +32,7 @@ HEADERS = [
 ]
 
 FIELDS = [
+    "shipment_code",
     "job_id",
     "created_at",
     "operator_name",
@@ -77,11 +79,11 @@ def export_job_xlsx(repo: PackagingRepository, job_id: str, path: Path) -> int:
         cell.font = Font(color="FFFFFF", bold=True)
         cell.fill = fill
         cell.alignment = Alignment(horizontal="center")
-    table = Table(displayName="PackagingResults", ref=f"A1:U{len(rows) + 1}")
+    table = Table(displayName="PackagingResults", ref=f"A1:V{len(rows) + 1}")
     table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
     sheet.add_table(table)
     sheet.freeze_panes = "A2"
-    widths = [22, 24, 14, 18, 12, 12, 22, 14, 12, 14, 12, 12, 12, 18, 16, 20, 12, 12, 38, 18, 24]
+    widths = [18, 22, 24, 14, 18, 12, 12, 22, 14, 12, 14, 12, 12, 12, 18, 16, 20, 12, 12, 38, 18, 24]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
     path.parent.mkdir(parents=True, exist_ok=True)

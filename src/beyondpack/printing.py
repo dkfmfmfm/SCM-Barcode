@@ -8,7 +8,7 @@ from PySide6.QtPrintSupport import QPrinter
 
 from .config import LabelSettings
 from .errors import LabelPrintError
-from .labels import render_group_label
+from .labels import COMPACT_HEIGHT_MM, render_group_label
 
 
 # QTextDocument는 붙은 페인트 장치가 없을 때 기본 화면 DPI로 글자 크기를 계산한다.
@@ -85,10 +85,14 @@ def print_box_labels(
     try:
         document = QTextDocument()
         total = len(numbers)
+        compact = (
+            printer.pageLayout().paintRect(QPageLayout.Millimeter).height()
+            < COMPACT_HEIGHT_MM
+        )
         for index, number in enumerate(numbers):
             if index and not printer.newPage():
                 raise LabelPrintError("라벨 다음 장으로 넘기지 못했습니다.")
-            document.setHtml(render_group_label(group, items, number, total))
+            document.setHtml(render_group_label(group, items, number, total, compact))
             draw_label(printer, painter, document)
     finally:
         painter.end()

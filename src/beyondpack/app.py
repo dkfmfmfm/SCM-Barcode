@@ -164,6 +164,7 @@ def _self_test_labels(output: Path) -> None:
     from .printing import apply_label_page, print_box_labels
 
     group = {
+        "shipment_code": "SELFTEST",
         "box_start_no": 4,
         "box_count": 3,
         "weight_kg": "10.0",

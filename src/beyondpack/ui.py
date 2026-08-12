@@ -46,7 +46,7 @@ from .errors import BeyondPackError, PackagingValidationError
 from .exporter import export_job_xlsx
 from .labels import box_numbers
 from .models import BoxGroupInput, BoxItem, Product
-from .normalization import positive_decimal, positive_int
+from .normalization import normalize_shipment_code, positive_decimal, positive_int
 from .packaging import PackagingRepository
 from .printing import apply_label_page, print_box_labels
 from .sources.base import ProductSource
@@ -122,8 +122,8 @@ class LabelSettingsDialog(QDialog):
             index = self.printer_combo.count() - 1
         self.printer_combo.setCurrentIndex(max(0, index))
 
-        self.width_input = self._millimeter_box(settings.width_mm, 10.0, 300.0)
-        self.height_input = self._millimeter_box(settings.height_mm, 10.0, 300.0)
+        self.width_input = self._millimeter_box(settings.width_mm, 20.0, 300.0)
+        self.height_input = self._millimeter_box(settings.height_mm, 15.0, 300.0)
         self.margin_input = self._millimeter_box(settings.margin_mm, 0.0, 20.0)
         self.auto_print = QCheckBox("박스 확정과 동시에 라벨을 자동 출력한다")
         self.auto_print.setChecked(settings.auto_print)
@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         self.current_product: Product | None = None
         self.items: list[BoxItem] = []
         self.job_id: str | None = None
+        self.job_shipment = ""
         self.last_saved: tuple[dict, list[dict]] | None = None
         self.sync_thread: QThread | None = None
         self.cache_blocked = False
@@ -209,6 +210,7 @@ class MainWindow(QMainWindow):
         self._connect_autosave()
         self._refresh_country_options()
         self._restore_draft()
+        self._refresh_next_box_label()
         self._show_initial_cache_state()
         if auto_sync:
             QTimer.singleShot(150, self.sync_now)
@@ -241,6 +243,20 @@ class MainWindow(QMainWindow):
         self.operator_input.setPlaceholderText("이름 또는 사번")
         self.operator_input.setMaximumWidth(180)
         header.addWidget(self.operator_input)
+        header.addWidget(QLabel("출고건"))
+        self.shipment_input = QLineEdit()
+        self.shipment_input.setObjectName("shipmentInput")
+        self.shipment_input.setPlaceholderText("출고건 번호를 스캔·입력")
+        self.shipment_input.setMaximumWidth(200)
+        self.shipment_input.setMinimumHeight(42)
+        self.shipment_input.setClearButtonEnabled(True)
+        self.shipment_input.textChanged.connect(self._shipment_changed)
+        header.addWidget(self.shipment_input)
+        self.next_box_label = QLabel()
+        self.next_box_label.setObjectName("nextBox")
+        self.next_box_label.setMinimumWidth(96)
+        self.next_box_label.setAlignment(Qt.AlignCenter)
+        header.addWidget(self.next_box_label)
         self.update_button = QPushButton("F2  Google Sheet 업데이트")
         self.update_button.clicked.connect(self.sync_now)
         header.addWidget(self.update_button)
@@ -763,6 +779,38 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.items_table.setItem(row, column, QTableWidgetItem(value))
 
+    def _shipment_code(self) -> str:
+        return normalize_shipment_code(self.shipment_input.text())
+
+    @Slot()
+    def _shipment_changed(self) -> None:
+        """출고건이 바뀌면 다음 박스번호를 다시 계산한다.
+
+        박스번호는 출고건 단위로 이어지므로, 다른 출고건으로 바꾸면 이어서
+        저장하지 않도록 현재 작업을 끊는다.
+        """
+        code = self._shipment_code()
+        if code != self.job_shipment:
+            self.job_id = None
+            self.job_shipment = code
+        self._refresh_next_box_label()
+        self._save_draft()
+
+    def _refresh_next_box_label(self) -> None:
+        code = self._shipment_code()
+        if not code:
+            self.next_box_label.setText("출고건 입력")
+            self.next_box_label.setStyleSheet(
+                "background:#FDECEC; color:#B91C1C; border:1px solid #E6A2A2;"
+                "border-radius:6px; padding:8px; font-weight:800;"
+            )
+            return
+        self.next_box_label.setText(f"다음 #{self.packaging.next_box_number(code)}")
+        self.next_box_label.setStyleSheet(
+            "background:#EAF2FF; color:#1D4ED8; border:1px solid #9BBDF7;"
+            "border-radius:6px; padding:8px; font-weight:800;"
+        )
+
     @Slot()
     def confirm_box_group(self) -> None:
         try:
@@ -771,6 +819,11 @@ class MainWindow(QMainWindow):
             operator_name = self.operator_input.text().strip()
             if not operator_name:
                 raise PackagingValidationError("작업자 이름 또는 사번을 입력하세요.")
+            shipment_code = self._shipment_code()
+            if not shipment_code:
+                raise PackagingValidationError(
+                    "출고건 번호를 입력하세요. 박스번호는 출고건 단위로 매겨집니다."
+                )
             value = BoxGroupInput(
                 box_count=positive_int(self.box_count.value(), "박스수량"),
                 weight_kg=positive_decimal(self.weight.value(), "무게", Decimal(str(self.config.weight_max_kg))),
@@ -779,12 +832,14 @@ class MainWindow(QMainWindow):
                 height_cm=positive_decimal(self.height.value(), "높이", Decimal(str(self.config.dimension_max_cm))),
                 items=tuple(self.items),
             )
-            if not self.job_id:
+            if not self.job_id or self.job_shipment != shipment_code:
                 self.job_id = self.packaging.create_job(
                     operator_name,
                     self.cache.info().data_version,
                     __version__,
+                    shipment_code,
                 )
+                self.job_shipment = shipment_code
             saved = self.packaging.save_box_group(
                 self.job_id, value, operator_name
             )
@@ -807,6 +862,7 @@ class MainWindow(QMainWindow):
         ):
             group, items = self.last_saved
             printed = self._print_box_labels(group, items, ask=False)
+        self._refresh_next_box_label()
         self._success(
             f"박스 #{saved.box_start_no}~#{saved.box_end_no} 저장 완료. "
             + (printed if printed else "F8로 라벨을 출력하거나 다음 작업을 스캔하세요.")
@@ -906,6 +962,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def print_test_label(self) -> None:
         group = {
+            "shipment_code": self._shipment_code() or "TEST",
             "box_start_no": 1,
             "box_count": 2,
             "weight_kg": "10.0",
@@ -963,8 +1020,13 @@ class MainWindow(QMainWindow):
             "width": self.width.value(),
             "height": self.height.value(),
             "selected_country_code": self._selected_country_code(),
+            "shipment_code": self._shipment_code(),
         }
-        if self.items or any(payload[key] for key in ("weight", "length", "width", "height")):
+        if (
+            self.items
+            or payload["shipment_code"]
+            or any(payload[key] for key in ("weight", "length", "width", "height"))
+        ):
             self.packaging.save_draft(self.DRAFT_KEY, payload)
 
     def _restore_draft(self) -> None:
@@ -980,6 +1042,7 @@ class MainWindow(QMainWindow):
             self.packaging.clear_draft(self.DRAFT_KEY)
             return
         try:
+            self.shipment_input.setText(str(draft.get("shipment_code", "")))
             self._select_country(str(draft.get("selected_country_code", "")))
             self.items = [BoxItem(**item) for item in draft.get("items", [])]
             if self.items:
@@ -1034,6 +1097,7 @@ class MainWindow(QMainWindow):
         QPushButton[stepperButton="true"]:hover { background:#EAF2FF; border-color:#2563EB; }
         QPushButton[stepperButton="true"]:pressed { background:#BFDBFE; }
         QComboBox#countrySelector { background: #FFF7E6; border: 2px solid #D97706; font-weight: 800; }
+        QLineEdit#shipmentInput { background: #FFF7E6; border: 2px solid #D97706; font-weight: 800; }
         QLineEdit#readonlyField { background: #F1F4F8; color: #0B1F3A; font-weight: 650; }
         QLabel#fieldCaption { color: #667085; font-size: 12px; }
         QPushButton { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 9px 13px; font-weight: 650; }

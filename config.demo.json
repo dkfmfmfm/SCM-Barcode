@@ -16,9 +16,9 @@
   },
   "label": {
     "printer_name": "",
-    "width_mm": 100.0,
-    "height_mm": 70.0,
-    "margin_mm": 2.0,
+    "width_mm": 40.0,
+    "height_mm": 25.0,
+    "margin_mm": 1.5,
     "auto_print": true
   }
 }

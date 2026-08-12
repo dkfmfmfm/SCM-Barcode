@@ -30,9 +30,9 @@ class LabelSettings:
     """라벨 프린터와 용지 규격. 지정하지 않으면 인쇄할 때마다 프린터를 고른다."""
 
     printer_name: str = ""
-    width_mm: float = 100.0
-    height_mm: float = 70.0
-    margin_mm: float = 2.0
+    width_mm: float = 40.0
+    height_mm: float = 25.0
+    margin_mm: float = 1.5
     auto_print: bool = True
 
 
