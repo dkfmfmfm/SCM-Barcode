@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import sqlite3
+from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -77,7 +78,9 @@ class PackagingTests(unittest.TestCase):
 
     def test_existing_database_without_shipment_column_is_migrated(self):
         path = Path(self.temp.name) / "legacy.db"
-        with sqlite3.connect(path) as conn:
+        # sqlite3 연결을 with 문에만 넘기면 커밋만 하고 연결은 열린 채로 남는다.
+        # Windows에서는 열린 연결이 파일을 잠가 정리에 실패하므로 반드시 닫는다.
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript(
                 """
                 CREATE TABLE packaging_jobs (
@@ -94,7 +97,7 @@ class PackagingTests(unittest.TestCase):
                 """
             )
         repo = PackagingRepository(path)
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(packaging_jobs)")}
             kept = conn.execute("SELECT COUNT(*) FROM packaging_jobs").fetchone()[0]
         self.assertIn("shipment_code", columns)
