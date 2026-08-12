@@ -121,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                     "GUI 창 또는 수량 증감 버튼 검사에 실패했습니다: "
                     f"visible={result['visible']}, steppers={result['steppers']}"
                 )
+            _self_test_labels(root / "labels.pdf")
         return 0
 
     config, config_path = load_config(args.config)
@@ -150,6 +151,64 @@ def main(argv: list[str] | None = None) -> int:
         return app.exec()
     finally:
         instance_lock.unlock()
+
+
+def _self_test_labels(output: Path) -> None:
+    """박스수량만큼 라벨이 순번대로 1장씩 나오는지 실제 인쇄 경로로 검사한다."""
+    import re
+
+    from PySide6.QtPrintSupport import QPrinter
+
+    from .config import LabelSettings
+    from .labels import box_numbers
+    from .printing import apply_label_page, print_box_labels
+
+    group = {
+        "shipment_code": "SELFTEST",
+        "box_start_no": 4,
+        "box_count": 3,
+        "weight_kg": "10.0",
+        "length_cm": "10.0",
+        "width_cm": "10.0",
+        "height_cm": "10.0",
+    }
+    items = [
+        {
+            "fnsku": "SELFTESTFNSKU",
+            "item_code": "SELF-TEST",
+            "sku": "SELF-TEST-SKU",
+            "country_code": "US",
+            "country_name": "US",
+            "qty_per_box": 1,
+        }
+    ]
+    label = LabelSettings()
+    printer = QPrinter(QPrinter.HighResolution)
+    printer.setOutputFormat(QPrinter.PdfFormat)
+    printer.setOutputFileName(str(output))
+    apply_label_page(printer, label)
+    numbers = box_numbers(group["box_start_no"], group["box_count"])
+    print_box_labels(printer, group, items, numbers)
+    del printer
+
+    payload = output.read_bytes()
+    pages = len(re.findall(rb"/Type\s*/Page[^s]", payload))
+    if pages != len(numbers):
+        raise RuntimeError(
+            f"라벨 인쇄 검사 실패: 박스 {len(numbers)}개에 라벨 {pages}장이 생성되었습니다."
+        )
+    boxes = [
+        tuple(round(float(value) * 25.4 / 72, 0) for value in match.split())
+        for match in re.findall(rb"/MediaBox\s*\[([^\]]+)\]", payload)
+    ]
+    expected = (round(label.width_mm, 0), round(label.height_mm, 0))
+    for box in boxes:
+        actual = (round(box[2] - box[0], 0), round(box[3] - box[1], 0))
+        if actual != expected:
+            raise RuntimeError(
+                f"라벨 용지 검사 실패: {actual[0]:.0f}x{actual[1]:.0f}mm "
+                f"(기대 {expected[0]:.0f}x{expected[1]:.0f}mm)"
+            )
 
 
 if __name__ == "__main__":

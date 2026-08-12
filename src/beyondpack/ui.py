@@ -6,13 +6,16 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QKeySequence, QTextDocument
-from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -37,14 +40,15 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .cache import ProductCacheRepository
-from .config import AppConfig, save_config
+from .config import AppConfig, LabelSettings, save_config
 from .diagnostics import create_diagnostic_bundle
 from .errors import BeyondPackError, PackagingValidationError
 from .exporter import export_job_xlsx
-from .labels import render_group_label
+from .labels import box_numbers
 from .models import BoxGroupInput, BoxItem, Product
-from .normalization import positive_decimal, positive_int
+from .normalization import normalize_shipment_code, positive_decimal, positive_int
 from .packaging import PackagingRepository
+from .printing import apply_label_page, print_box_labels
 from .sources.base import ProductSource
 from .sources.excel_source import ExcelProductSource
 from .sources.google_sheets import google_sheet_csv_url
@@ -95,6 +99,83 @@ class SyncWorker(QObject):
         self.finished.emit(result)
 
 
+class LabelSettingsDialog(QDialog):
+    """라벨 프린터와 용지 규격을 코드 수정 없이 지정한다."""
+
+    NO_PRINTER = "인쇄할 때 선택"
+
+    def __init__(self, settings: LabelSettings, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("라벨 설정")
+        self.setMinimumWidth(430)
+
+        self.printer_combo = QComboBox()
+        self.printer_combo.setMinimumHeight(36)
+        self.printer_combo.addItem(self.NO_PRINTER, "")
+        for name in QPrinterInfo.availablePrinterNames():
+            self.printer_combo.addItem(name, name)
+        index = self.printer_combo.findData(settings.printer_name.strip())
+        if index < 0 and settings.printer_name.strip():
+            self.printer_combo.addItem(
+                f"{settings.printer_name} (연결 안 됨)", settings.printer_name
+            )
+            index = self.printer_combo.count() - 1
+        self.printer_combo.setCurrentIndex(max(0, index))
+
+        self.width_input = self._millimeter_box(settings.width_mm, 20.0, 300.0)
+        self.height_input = self._millimeter_box(settings.height_mm, 15.0, 300.0)
+        self.margin_input = self._millimeter_box(settings.margin_mm, 0.0, 20.0)
+        self.auto_print = QCheckBox("박스 확정과 동시에 라벨을 자동 출력한다")
+        self.auto_print.setChecked(settings.auto_print)
+
+        form = QFormLayout()
+        form.addRow("라벨 프린터", self.printer_combo)
+        form.addRow("라벨 가로", self.width_input)
+        form.addRow("라벨 세로", self.height_input)
+        form.addRow("여백", self.margin_input)
+        form.addRow("", self.auto_print)
+
+        guide = QLabel(
+            "라벨 롤의 실제 크기를 mm로 입력하세요. 크기가 맞지 않으면 내용이 잘리거나 "
+            "빈 라벨이 함께 배출됩니다. 저장 후 '테스트 라벨 출력'으로 확인하세요."
+        )
+        guide.setWordWrap(True)
+        guide.setObjectName("fieldCaption")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self
+        )
+        buttons.button(QDialogButtonBox.Ok).setText("저장")
+        buttons.button(QDialogButtonBox.Cancel).setText("취소")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(guide)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _millimeter_box(value: float, minimum: float, maximum: float) -> QDoubleSpinBox:
+        box = QDoubleSpinBox()
+        box.setRange(minimum, maximum)
+        box.setDecimals(1)
+        box.setSingleStep(1.0)
+        box.setSuffix(" mm")
+        box.setMinimumHeight(36)
+        box.setValue(value)
+        return box
+
+    def settings(self) -> LabelSettings:
+        return LabelSettings(
+            printer_name=str(self.printer_combo.currentData() or ""),
+            width_mm=self.width_input.value(),
+            height_mm=self.height_input.value(),
+            margin_mm=self.margin_input.value(),
+            auto_print=self.auto_print.isChecked(),
+        )
+
+
 class MainWindow(QMainWindow):
     DRAFT_KEY = "current-packaging"
 
@@ -116,6 +197,7 @@ class MainWindow(QMainWindow):
         self.current_product: Product | None = None
         self.items: list[BoxItem] = []
         self.job_id: str | None = None
+        self.job_shipment = ""
         self.last_saved: tuple[dict, list[dict]] | None = None
         self.sync_thread: QThread | None = None
         self.cache_blocked = False
@@ -128,6 +210,7 @@ class MainWindow(QMainWindow):
         self._connect_autosave()
         self._refresh_country_options()
         self._restore_draft()
+        self._refresh_next_box_label()
         self._show_initial_cache_state()
         if auto_sync:
             QTimer.singleShot(150, self.sync_now)
@@ -160,6 +243,20 @@ class MainWindow(QMainWindow):
         self.operator_input.setPlaceholderText("이름 또는 사번")
         self.operator_input.setMaximumWidth(180)
         header.addWidget(self.operator_input)
+        header.addWidget(QLabel("출고건"))
+        self.shipment_input = QLineEdit()
+        self.shipment_input.setObjectName("shipmentInput")
+        self.shipment_input.setPlaceholderText("출고건 번호를 스캔·입력")
+        self.shipment_input.setMaximumWidth(200)
+        self.shipment_input.setMinimumHeight(42)
+        self.shipment_input.setClearButtonEnabled(True)
+        self.shipment_input.textChanged.connect(self._shipment_changed)
+        header.addWidget(self.shipment_input)
+        self.next_box_label = QLabel()
+        self.next_box_label.setObjectName("nextBox")
+        self.next_box_label.setMinimumWidth(96)
+        self.next_box_label.setAlignment(Qt.AlignCenter)
+        header.addWidget(self.next_box_label)
         self.update_button = QPushButton("F2  Google Sheet 업데이트")
         self.update_button.clicked.connect(self.sync_now)
         header.addWidget(self.update_button)
@@ -293,15 +390,21 @@ class MainWindow(QMainWindow):
         print_button.clicked.connect(self.print_last_labels)
         export_button = QPushButton("작업 Excel 저장")
         export_button.clicked.connect(self.export_current_job)
+        label_settings_button = QPushButton("라벨 설정")
+        label_settings_button.clicked.connect(self.configure_labels)
+        test_label_button = QPushButton("테스트 라벨 출력")
+        test_label_button.clicked.connect(self.print_test_label)
         self.excel_import_button = QPushButton("Excel 비상 업데이트")
         self.excel_import_button.clicked.connect(self.import_excel_products)
         diagnostic_button = QPushButton("관리자 진단파일 생성")
         diagnostic_button.clicked.connect(self.create_diagnostics)
         utility_layout.addWidget(reset_button, 0, 0)
         utility_layout.addWidget(print_button, 0, 1)
-        utility_layout.addWidget(export_button, 1, 0)
-        utility_layout.addWidget(self.excel_import_button, 1, 1)
-        utility_layout.addWidget(diagnostic_button, 2, 0, 1, 2)
+        utility_layout.addWidget(label_settings_button, 1, 0)
+        utility_layout.addWidget(test_label_button, 1, 1)
+        utility_layout.addWidget(export_button, 2, 0)
+        utility_layout.addWidget(self.excel_import_button, 2, 1)
+        utility_layout.addWidget(diagnostic_button, 3, 0, 1, 2)
         right.addWidget(utility_group)
         right.addStretch()
 
@@ -676,6 +779,38 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.items_table.setItem(row, column, QTableWidgetItem(value))
 
+    def _shipment_code(self) -> str:
+        return normalize_shipment_code(self.shipment_input.text())
+
+    @Slot()
+    def _shipment_changed(self) -> None:
+        """출고건이 바뀌면 다음 박스번호를 다시 계산한다.
+
+        박스번호는 출고건 단위로 이어지므로, 다른 출고건으로 바꾸면 이어서
+        저장하지 않도록 현재 작업을 끊는다.
+        """
+        code = self._shipment_code()
+        if code != self.job_shipment:
+            self.job_id = None
+            self.job_shipment = code
+        self._refresh_next_box_label()
+        self._save_draft()
+
+    def _refresh_next_box_label(self) -> None:
+        code = self._shipment_code()
+        if not code:
+            self.next_box_label.setText("출고건 입력")
+            self.next_box_label.setStyleSheet(
+                "background:#FDECEC; color:#B91C1C; border:1px solid #E6A2A2;"
+                "border-radius:6px; padding:8px; font-weight:800;"
+            )
+            return
+        self.next_box_label.setText(f"다음 #{self.packaging.next_box_number(code)}")
+        self.next_box_label.setStyleSheet(
+            "background:#EAF2FF; color:#1D4ED8; border:1px solid #9BBDF7;"
+            "border-radius:6px; padding:8px; font-weight:800;"
+        )
+
     @Slot()
     def confirm_box_group(self) -> None:
         try:
@@ -684,6 +819,11 @@ class MainWindow(QMainWindow):
             operator_name = self.operator_input.text().strip()
             if not operator_name:
                 raise PackagingValidationError("작업자 이름 또는 사번을 입력하세요.")
+            shipment_code = self._shipment_code()
+            if not shipment_code:
+                raise PackagingValidationError(
+                    "출고건 번호를 입력하세요. 박스번호는 출고건 단위로 매겨집니다."
+                )
             value = BoxGroupInput(
                 box_count=positive_int(self.box_count.value(), "박스수량"),
                 weight_kg=positive_decimal(self.weight.value(), "무게", Decimal(str(self.config.weight_max_kg))),
@@ -692,12 +832,14 @@ class MainWindow(QMainWindow):
                 height_cm=positive_decimal(self.height.value(), "높이", Decimal(str(self.config.dimension_max_cm))),
                 items=tuple(self.items),
             )
-            if not self.job_id:
+            if not self.job_id or self.job_shipment != shipment_code:
                 self.job_id = self.packaging.create_job(
                     operator_name,
                     self.cache.info().data_version,
                     __version__,
+                    shipment_code,
                 )
+                self.job_shipment = shipment_code
             saved = self.packaging.save_box_group(
                 self.job_id, value, operator_name
             )
@@ -712,8 +854,18 @@ class MainWindow(QMainWindow):
         self.box_count.setValue(1)
         for widget in (self.weight, self.length, self.width, self.height):
             widget.setValue(0)
+        printed = ""
+        if (
+            self.config.label.auto_print
+            and self.config.label.printer_name.strip()
+            and self.last_saved
+        ):
+            group, items = self.last_saved
+            printed = self._print_box_labels(group, items, ask=False)
+        self._refresh_next_box_label()
         self._success(
-            f"박스 {saved.box_start_no}~{saved.box_end_no} 저장 완료. 라벨을 출력하거나 다음 작업을 스캔하세요."
+            f"박스 #{saved.box_start_no}~#{saved.box_end_no} 저장 완료. "
+            + (printed if printed else "F8로 라벨을 출력하거나 다음 작업을 스캔하세요.")
         )
         self.fnsku_input.setFocus()
 
@@ -732,6 +884,49 @@ class MainWindow(QMainWindow):
         self.next_action.setText("다음 행동: FNSKU를 스캔하세요.")
         self.fnsku_input.setFocus()
 
+    def _label_printer(self) -> QPrinter | None:
+        name = self.config.label.printer_name.strip()
+        if name:
+            info = QPrinterInfo.printerInfo(name)
+            if info.isNull():
+                self._error(
+                    f"설정된 라벨 프린터 '{name}'를 찾을 수 없습니다. "
+                    "'라벨 설정'에서 프린터를 다시 선택하세요. [BP-PRINT-002]"
+                )
+                return None
+            printer = QPrinter(info, QPrinter.HighResolution)
+        else:
+            printer = QPrinter(QPrinter.HighResolution)
+        apply_label_page(printer, self.config.label)
+        return printer
+
+    def _print_box_labels(self, group: dict, items: list[dict], ask: bool) -> str:
+        """박스수량만큼의 라벨을 한 번의 인쇄 작업으로 순번대로 출력한다.
+
+        박스마다 인쇄를 따로 호출하면 프린터 드라이버가 각각을 별개 작업으로
+        처리해 박스번호가 이어지지 않는다. 하나의 인쇄 작업 안에서 페이지를
+        직접 넘기며 라벨 1장씩 그린다.
+        """
+        numbers = box_numbers(group["box_start_no"], group["box_count"])
+        printer = self._label_printer()
+        if printer is None:
+            return ""
+        if ask:
+            dialog = QPrintDialog(printer, self)
+            if dialog.exec() != QPrintDialog.Accepted:
+                return ""
+            # 인쇄 대화상자가 용지를 A4로 되돌려도 라벨 규격을 다시 강제한다.
+            apply_label_page(printer, self.config.label)
+        try:
+            print_box_labels(printer, group, items, numbers)
+        except BeyondPackError as exc:
+            self._error(f"{exc} [{exc.code}]")
+            return ""
+        except Exception as exc:
+            self._error(f"라벨 출력 실패: {exc} [BP-PRINT-003]")
+            return ""
+        return f"라벨 #{numbers[0]}~#{numbers[-1]} {len(numbers)}장을 출력했습니다."
+
     @Slot()
     def print_last_labels(self) -> None:
         if not self.last_saved and self.job_id:
@@ -740,17 +935,56 @@ class MainWindow(QMainWindow):
             self._error("재출력할 저장된 라벨이 없습니다. [BP-PRINT-001]", beep=False)
             return
         group, items = self.last_saved
-        printer = QPrinter(QPrinter.HighResolution)
-        dialog = QPrintDialog(printer, self)
-        if dialog.exec() != QPrintDialog.Accepted:
+        message = self._print_box_labels(
+            group, items, ask=not self.config.label.printer_name.strip()
+        )
+        if message:
+            self._success(message)
+
+    @Slot()
+    def configure_labels(self) -> None:
+        dialog = LabelSettingsDialog(self.config.label, self)
+        if dialog.exec() != QDialog.Accepted:
             return
-        start = int(group["box_start_no"])
-        count = int(group["box_count"])
-        document = QTextDocument()
-        for offset in range(count):
-            document.setHtml(render_group_label(group, items, start + offset))
-            document.print_(printer)
-        self._success(f"라벨 {count}장을 프린터로 전송했습니다.")
+        self.config.label = dialog.settings()
+        try:
+            save_config(self.config, self.config_path)
+        except OSError as exc:
+            self._error(f"설정을 저장하지 못했습니다: {exc} [BP-CFG-002]")
+            return
+        label = self.config.label
+        self._success(
+            f"라벨 설정 저장: {label.printer_name or '인쇄할 때 선택'} · "
+            f"{label.width_mm:g}×{label.height_mm:g}mm · "
+            f"확정 시 자동출력 {'켬' if label.auto_print else '끔'}"
+        )
+
+    @Slot()
+    def print_test_label(self) -> None:
+        group = {
+            "shipment_code": self._shipment_code() or "TEST",
+            "box_start_no": 1,
+            "box_count": 2,
+            "weight_kg": "10.0",
+            "length_cm": "10.0",
+            "width_cm": "10.0",
+            "height_cm": "10.0",
+        }
+        items = [
+            {
+                "fnsku": "TESTFNSKU1",
+                "item_code": "TEST-CODE",
+                "sku": "TEST-SKU",
+                "country_code": "US",
+                "country_name": "US",
+                "qty_per_box": 1,
+            }
+        ]
+        message = self._print_box_labels(
+            group, items, ask=not self.config.label.printer_name.strip()
+        )
+        if message:
+            self._success("테스트 " + message)
 
     @Slot()
     def export_current_job(self) -> None:
@@ -786,8 +1020,13 @@ class MainWindow(QMainWindow):
             "width": self.width.value(),
             "height": self.height.value(),
             "selected_country_code": self._selected_country_code(),
+            "shipment_code": self._shipment_code(),
         }
-        if self.items or any(payload[key] for key in ("weight", "length", "width", "height")):
+        if (
+            self.items
+            or payload["shipment_code"]
+            or any(payload[key] for key in ("weight", "length", "width", "height"))
+        ):
             self.packaging.save_draft(self.DRAFT_KEY, payload)
 
     def _restore_draft(self) -> None:
@@ -803,6 +1042,7 @@ class MainWindow(QMainWindow):
             self.packaging.clear_draft(self.DRAFT_KEY)
             return
         try:
+            self.shipment_input.setText(str(draft.get("shipment_code", "")))
             self._select_country(str(draft.get("selected_country_code", "")))
             self.items = [BoxItem(**item) for item in draft.get("items", [])]
             if self.items:
@@ -857,6 +1097,7 @@ class MainWindow(QMainWindow):
         QPushButton[stepperButton="true"]:hover { background:#EAF2FF; border-color:#2563EB; }
         QPushButton[stepperButton="true"]:pressed { background:#BFDBFE; }
         QComboBox#countrySelector { background: #FFF7E6; border: 2px solid #D97706; font-weight: 800; }
+        QLineEdit#shipmentInput { background: #FFF7E6; border: 2px solid #D97706; font-weight: 800; }
         QLineEdit#readonlyField { background: #F1F4F8; color: #0B1F3A; font-weight: 650; }
         QLabel#fieldCaption { color: #667085; font-size: 12px; }
         QPushButton { background: white; border: 1px solid #CFC8BC; border-radius: 6px; padding: 9px 13px; font-weight: 650; }

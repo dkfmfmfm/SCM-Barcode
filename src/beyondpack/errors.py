@@ -42,3 +42,7 @@ class CountrySelectionRequiredError(BeyondPackError):
 
 class PackagingValidationError(BeyondPackError):
     code = "BP-PACK-001"
+
+
+class LabelPrintError(BeyondPackError):
+    code = "BP-PRINT-004"

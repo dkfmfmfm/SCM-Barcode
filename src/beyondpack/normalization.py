@@ -21,6 +21,13 @@ def normalize_country_code(value: object) -> str:
     return _SCANNER_WHITESPACE.sub("", str(value)).upper()
 
 
+def normalize_shipment_code(value: object) -> str:
+    """출고건(쉽먼트) 번호를 정규화한다. 박스번호를 이어붙이는 기준 키다."""
+    if value is None:
+        return ""
+    return _SCANNER_WHITESPACE.sub("", str(value)).upper()
+
+
 def product_lookup_key(fnsku: object, country_code: object) -> str:
     normalized_fnsku = normalize_fnsku(fnsku)
     normalized_country = normalize_country_code(country_code)

@@ -10,6 +10,7 @@ from typing import Iterator
 
 from .errors import PackagingValidationError
 from .models import BoxGroupInput, BoxItem, utc_now_iso
+from .normalization import normalize_shipment_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +51,8 @@ class PackagingRepository:
                     operator_name TEXT NOT NULL,
                     product_db_version TEXT NOT NULL,
                     app_version TEXT NOT NULL,
-                    status TEXT NOT NULL
+                    status TEXT NOT NULL,
+                    shipment_code TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS box_groups (
                     box_group_id TEXT PRIMARY KEY,
@@ -94,17 +96,81 @@ class PackagingRepository:
                 CREATE INDEX IF NOT EXISTS idx_box_items_fnsku ON box_items(fnsku);
                 """
             )
+            # 2.2.4 이전 DB에는 출고건 열이 없다. 기존 포장기록은 그대로 두고
+            # 열만 추가해 앞으로의 박스번호를 출고건 단위로 잇는다.
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(packaging_jobs)").fetchall()
+            }
+            if "shipment_code" not in columns:
+                conn.execute(
+                    "ALTER TABLE packaging_jobs ADD COLUMN shipment_code TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_shipment ON packaging_jobs(shipment_code)"
+            )
 
-    def create_job(self, operator_name: str, product_db_version: str, app_version: str) -> str:
+    def create_job(
+        self,
+        operator_name: str,
+        product_db_version: str,
+        app_version: str,
+        shipment_code: str = "",
+    ) -> str:
         now = utc_now_iso()
         job_id = uuid.uuid4().hex
+        code = normalize_shipment_code(shipment_code)
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO packaging_jobs VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (job_id, now, now, operator_name.strip(), product_db_version, app_version, "OPEN"),
+                """
+                INSERT INTO packaging_jobs(
+                    job_id, created_at, updated_at, operator_name,
+                    product_db_version, app_version, status, shipment_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    now,
+                    now,
+                    operator_name.strip(),
+                    product_db_version,
+                    app_version,
+                    "OPEN",
+                    code,
+                ),
             )
-            self._audit(conn, operator_name, "CREATE", "JOB", job_id)
+            self._audit(
+                conn,
+                operator_name,
+                "CREATE",
+                "JOB",
+                job_id,
+                details={"shipment_code": code},
+            )
         return job_id
+
+    @staticmethod
+    def _next_box_number(conn: sqlite3.Connection, shipment_code: str) -> int:
+        """출고건 안에서 다음에 붙일 박스번호.
+
+        박스번호는 작업(job)이 아니라 출고건 단위로 이어진다. 프로그램을 껐다
+        켜도 같은 출고건이면 이어서 매기고, 다른 출고건이면 1부터 시작한다.
+        """
+        return int(
+            conn.execute(
+                """
+                SELECT COALESCE(MAX(g.box_start_no + g.box_count), 1)
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                WHERE j.shipment_code = ?
+                """,
+                (shipment_code,),
+            ).fetchone()[0]
+        )
+
+    def next_box_number(self, shipment_code: str) -> int:
+        with self._connect() as conn:
+            return self._next_box_number(conn, normalize_shipment_code(shipment_code))
 
     def save_box_group(
         self, job_id: str, value: BoxGroupInput, operator_name: str
@@ -115,16 +181,12 @@ class PackagingRepository:
         now = utc_now_iso()
         with self._connect() as conn:
             job = conn.execute(
-                "SELECT status FROM packaging_jobs WHERE job_id = ?", (job_id,)
+                "SELECT status, shipment_code FROM packaging_jobs WHERE job_id = ?",
+                (job_id,),
             ).fetchone()
             if job is None or job["status"] != "OPEN":
                 raise PackagingValidationError("저장 가능한 작업이 아닙니다.")
-            start = int(
-                conn.execute(
-                    "SELECT COALESCE(MAX(box_start_no + box_count), 1) FROM box_groups WHERE job_id = ?",
-                    (job_id,),
-                ).fetchone()[0]
-            )
+            start = self._next_box_number(conn, str(job["shipment_code"]))
             conn.execute(
                 """
                 INSERT INTO box_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -206,8 +268,9 @@ class PackagingRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT j.job_id, j.created_at, j.operator_name, j.product_db_version,
-                       j.app_version, j.status, g.box_group_id, g.box_start_no,
+                SELECT j.job_id, j.shipment_code, j.created_at, j.operator_name,
+                       j.product_db_version, j.app_version, j.status,
+                       g.box_group_id, g.box_start_no,
                        g.box_count, g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
                        i.fnsku, i.item_code, i.sku, i.country_code, i.country_name,
                        i.product_name, i.qty_per_box, i.source_modified_at
@@ -224,7 +287,13 @@ class PackagingRepository:
     def last_group(self, job_id: str) -> tuple[dict, list[dict]] | None:
         with self._connect() as conn:
             group = conn.execute(
-                "SELECT * FROM box_groups WHERE job_id = ? ORDER BY box_start_no DESC LIMIT 1",
+                """
+                SELECT g.*, j.shipment_code
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                WHERE g.job_id = ?
+                ORDER BY g.box_start_no DESC LIMIT 1
+                """,
                 (job_id,),
             ).fetchone()
             if not group:

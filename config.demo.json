@@ -13,5 +13,12 @@
     "gid": "",
     "timeout_seconds": 10,
     "max_download_bytes": 20000000
+  },
+  "label": {
+    "printer_name": "",
+    "width_mm": 40.0,
+    "height_mm": 25.0,
+    "margin_mm": 1.5,
+    "auto_print": true
   }
 }
