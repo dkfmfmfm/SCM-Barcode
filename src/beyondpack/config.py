@@ -26,6 +26,17 @@ class GoogleSheetsSettings:
 
 
 @dataclass(slots=True)
+class LabelSettings:
+    """라벨 프린터와 용지 규격. 지정하지 않으면 인쇄할 때마다 프린터를 고른다."""
+
+    printer_name: str = ""
+    width_mm: float = 100.0
+    height_mm: float = 70.0
+    margin_mm: float = 2.0
+    auto_print: bool = True
+
+
+@dataclass(slots=True)
 class AppConfig:
     source_type: str = "google_sheets"
     source_json_path: str = ""
@@ -37,6 +48,7 @@ class AppConfig:
     weight_max_kg: float = 1000.0
     dimension_max_cm: float = 500.0
     google_sheets: GoogleSheetsSettings = field(default_factory=GoogleSheetsSettings)
+    label: LabelSettings = field(default_factory=LabelSettings)
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -44,20 +56,30 @@ class AppConfig:
 
 
 def _from_dict(raw: dict[str, Any]) -> AppConfig:
-    google_sheets = GoogleSheetsSettings(**raw.get("google_sheets", {}))
-    values = {k: v for k, v in raw.items() if k not in {"sharepoint", "google_sheets"}}
+    try:
+        google_sheets = GoogleSheetsSettings(**raw.get("google_sheets", {}))
+        label = LabelSettings(**raw.get("label", {}))
+    except TypeError as exc:
+        raise ConfigurationError(f"config.json 필드가 올바르지 않습니다: {exc}") from exc
+    values = {
+        k: v for k, v in raw.items() if k not in {"sharepoint", "google_sheets", "label"}
+    }
     # 2.1.x used SharePoint. 2.2 migrates that setting to the new primary
     # source without preserving credentials or opening a Microsoft login flow.
     if values.get("source_type") == "sharepoint":
         values["source_type"] = "google_sheets"
     try:
-        config = AppConfig(**values, google_sheets=google_sheets)
+        config = AppConfig(**values, google_sheets=google_sheets, label=label)
     except TypeError as exc:
         raise ConfigurationError(f"config.json 필드가 올바르지 않습니다: {exc}") from exc
     if config.source_type not in {"json", "google_sheets"}:
         raise ConfigurationError("source_type은 google_sheets 또는 json이어야 합니다.")
     if not 0 <= config.large_drop_threshold < 1:
         raise ConfigurationError("large_drop_threshold는 0 이상 1 미만이어야 합니다.")
+    if config.label.width_mm <= 0 or config.label.height_mm <= 0:
+        raise ConfigurationError("라벨 가로·세로(mm)는 0보다 커야 합니다.")
+    if config.label.margin_mm < 0:
+        raise ConfigurationError("라벨 여백(mm)은 0 이상이어야 합니다.")
     return config
 
 

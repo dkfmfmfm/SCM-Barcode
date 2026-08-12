@@ -1,4 +1,4 @@
-# BeyondPack 2.2.3
+# BeyondPack 2.2.4
 
 `PLAN.MD`와 `RESEARCH.MD`를 기준으로 구현한 Windows 포장 작업 프로그램이다. 평상시 Google Sheet를 CSV로 자동 다운로드하고, 검증에 성공한 상품만 로컬 SQLite에 저장한다. 실제 스캔 조회는 네트워크가 아니라 `FNSKU+CountryCode` 로컬 인덱스를 사용한다.
 
@@ -22,7 +22,9 @@
 - 인터넷 장애와 오래된 캐시 경고 중에도 기존 검증 DB로 작업 가능
 - 포장 당시 상품정보·상품DB 버전 스냅샷 저장
 - 자동 임시저장과 비정상 종료 복구
-- Excel 포장실적, 라벨 출력·재출력
+- 박스수량만큼 `#1`, `#2` 순번 라벨을 한 번의 인쇄 작업으로 출력
+- 라벨 프린터·라벨 크기(mm)·자동출력을 화면에서 설정, 테스트 라벨 출력
+- Excel 포장실적, 라벨 재출력
 - 정식 설치파일, 프로그램/바탕화면/시작 메뉴 아이콘
 - 시작 로그와 관리자 진단 ZIP
 
@@ -51,6 +53,7 @@ SchemaVersion
 1. Google Sheet의 `BeyondPack` 탭 첫 행에 위 열을 넣는다.
 2. 설치 후 바탕화면의 `BeyondPack`을 실행한다.
 3. 상단 `Sheet 설정`을 누르고 해당 탭이 열린 Google Sheet 주소를 붙여넣는다.
+5. `라벨 설정`에서 라벨 프린터와 라벨 롤의 실제 크기(mm)를 지정하고 `테스트 라벨 출력`으로 확인한다.
 4. 프로그램이 CSV를 자동 다운로드하고 검증한 뒤 국가 목록을 표시한다.
 
 전체 설치·설정·단품·합포·라벨·오류대응 절차는 [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)를 참고한다. 상품 마스터 작성 세부 내용은 [`docs/GOOGLE_SHEETS_SETUP.md`](docs/GOOGLE_SHEETS_SETUP.md)를 따른다.

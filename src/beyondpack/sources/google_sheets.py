@@ -6,6 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .. import __version__
 from ..config import GoogleSheetsSettings
 from ..errors import ConfigurationError, SourceError
 from .base import ProductBatch, ProductSource
@@ -51,7 +52,7 @@ class GoogleSheetsProductSource(ProductSource):
             self.export_url,
             headers={
                 "Accept": "text/csv",
-                "User-Agent": "BeyondPack/2.2.3",
+                "User-Agent": f"BeyondPack/{__version__}",
             },
         )
         try:
