@@ -21,28 +21,30 @@ def _document_pixels(millimeter: float) -> float:
     return millimeter / 25.4 * DOCUMENT_DPI
 
 
-def apply_label_page(printer: QPrinter, label: LabelSettings) -> None:
-    """라벨 용지 규격을 프린터에 지정한다.
+def apply_label_page(printer: QPrinter, label: LabelSettings) -> QSizeF:
+    """라벨 용지 규격을 프린터에 지정하고 실제로 적용된 크기를 돌려준다.
 
-    지정하지 않으면 드라이버 기본값(대개 A4)으로 전송되어 라벨 내용이 잘리고
-    남은 A4 높이만큼 빈 라벨이 계속 배출된다.
+    Windows 드라이버가 요청한 사용자 정의 용지를 갖고 있지 않으면 지정이 조용히
+    실패하고 기본값(대개 A4)이 유지된다. 그 상태로 인쇄하면 라벨 내용이 잘리고
+    남은 A4 높이만큼 빈 라벨이 계속 배출되므로, 호출자가 결과를 확인할 수 있도록
+    적용된 크기를 반환한다.
     """
-    page_size = QPageSize(
-        QSizeF(label.width_mm, label.height_mm),
-        QPageSize.Millimeter,
-        "BeyondPackLabel",
-        QPageSize.ExactMatch,
-    )
+    requested = QSizeF(label.width_mm, label.height_mm)
     margin = max(0.0, label.margin_mm)
-    printer.setPageLayout(
-        QPageLayout(
-            page_size,
-            QPageLayout.Portrait,
-            QMarginsF(margin, margin, margin, margin),
-            QPageLayout.Millimeter,
+    margins = QMarginsF(margin, margin, margin, margin)
+    for match in (QPageSize.ExactMatch, QPageSize.FuzzyMatch):
+        page_size = QPageSize(requested, QPageSize.Millimeter, "BeyondPackLabel", match)
+        layout = QPageLayout(
+            page_size, QPageLayout.Portrait, margins, QPageLayout.Millimeter
         )
-    )
+        if printer.setPageLayout(layout):
+            break
+        # 일부 드라이버는 용지와 여백을 한 번에 바꾸는 요청만 거부한다.
+        if printer.setPageSize(page_size):
+            printer.setPageMargins(margins, QPageLayout.Millimeter)
+            break
     printer.setFullPage(False)
+    return printer.pageLayout().pageSize().size(QPageSize.Millimeter)
 
 
 def draw_label(printer: QPrinter, painter: QPainter, document: QTextDocument) -> None:
@@ -68,7 +70,11 @@ def draw_label(printer: QPrinter, painter: QPainter, document: QTextDocument) ->
 
 
 def print_box_labels(
-    printer: QPrinter, group: dict, items: list[dict], numbers: Sequence[int]
+    printer: QPrinter,
+    group: dict,
+    items: list[dict],
+    numbers: Sequence[int],
+    label: LabelSettings,
 ) -> None:
     """박스번호마다 라벨 1장을 하나의 인쇄 작업으로 출력한다.
 
@@ -77,6 +83,15 @@ def print_box_labels(
     """
     if not numbers:
         raise LabelPrintError("출력할 박스번호가 없습니다.")
+    applied = apply_label_page(printer, label)
+    if not label.matches_page(applied.width(), applied.height()):
+        raise LabelPrintError(
+            f"라벨 프린터가 {label.width_mm:g}×{label.height_mm:g}mm 용지를 받아들이지 않아 "
+            f"{applied.width():.0f}×{applied.height():.0f}mm로 인쇄됩니다. "
+            "이대로 출력하면 라벨이 잘리고 빈 라벨이 함께 배출되므로 중단했습니다. "
+            "Windows [설정 > 프린터 및 스캐너 > 해당 프린터 > 인쇄 기본 설정]에서 "
+            f"{label.width_mm:g}×{label.height_mm:g}mm 사용자 정의 용지를 등록한 뒤 다시 출력하세요."
+        )
     painter = QPainter()
     if not painter.begin(printer):
         raise LabelPrintError(
@@ -85,10 +100,9 @@ def print_box_labels(
     try:
         document = QTextDocument()
         total = len(numbers)
-        compact = (
-            printer.pageLayout().paintRect(QPageLayout.Millimeter).height()
-            < COMPACT_HEIGHT_MM
-        )
+        # 배치는 설정한 라벨 크기로 결정한다. 프린터가 보고하는 인쇄영역으로
+        # 판단하면 용지 지정이 밀렸을 때 표 배치가 선택되어 증상이 겹친다.
+        compact = label.height_mm < COMPACT_HEIGHT_MM
         for index, number in enumerate(numbers):
             if index and not printer.newPage():
                 raise LabelPrintError("라벨 다음 장으로 넘기지 못했습니다.")

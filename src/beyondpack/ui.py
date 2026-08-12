@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QPageSize
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -142,6 +142,13 @@ class LabelSettingsDialog(QDialog):
         guide.setWordWrap(True)
         guide.setObjectName("fieldCaption")
 
+        self.support_label = QLabel()
+        self.support_label.setWordWrap(True)
+        self.printer_combo.currentIndexChanged.connect(self._refresh_support)
+        self.width_input.valueChanged.connect(self._refresh_support)
+        self.height_input.valueChanged.connect(self._refresh_support)
+        self._refresh_support()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self
         )
@@ -152,8 +159,56 @@ class LabelSettingsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(self.support_label)
         layout.addWidget(guide)
         layout.addWidget(buttons)
+
+    @Slot()
+    def _refresh_support(self) -> None:
+        """선택한 프린터에 이 라벨 크기가 등록되어 있는지 미리 알려준다.
+
+        Windows 드라이버에 해당 사용자 정의 용지가 없으면 인쇄 시점에 크기 지정이
+        실패하므로, 설정 단계에서 먼저 확인할 수 있게 한다.
+        """
+        style = "border-radius:6px; padding:9px; font-weight:700;"
+        name = str(self.printer_combo.currentData() or "")
+        if not name:
+            self.support_label.setText("인쇄할 때마다 프린터를 선택합니다.")
+            self.support_label.setStyleSheet(
+                f"background:#F1EEE8; color:#667085; {style}"
+            )
+            return
+        info = QPrinterInfo.printerInfo(name)
+        settings = self.settings()
+        if info.isNull():
+            self.support_label.setText(
+                f"'{name}'를 찾을 수 없습니다. 프린터 연결과 전원을 확인하세요."
+            )
+            self.support_label.setStyleSheet(
+                f"background:#FDECEC; color:#B91C1C; {style}"
+            )
+            return
+        sizes = [
+            page.size(QPageSize.Millimeter) for page in info.supportedPageSizes()
+        ]
+        target = f"{settings.width_mm:g}×{settings.height_mm:g}mm"
+        if any(settings.matches_page(size.width(), size.height()) for size in sizes):
+            self.support_label.setText(f"이 프린터에 {target} 용지가 등록되어 있습니다.")
+            self.support_label.setStyleSheet(
+                f"background:#E9F7EF; color:#166534; {style}"
+            )
+            return
+        registered = ", ".join(
+            f"{size.width():.0f}×{size.height():.0f}" for size in sizes[:6]
+        )
+        self.support_label.setText(
+            f"이 프린터의 등록된 용지 목록에 {target}가 없습니다"
+            + (f" (등록된 크기 mm: {registered})" if registered else "")
+            + ". 그대로 인쇄하면 A4로 나가 라벨이 잘리므로, Windows "
+            "[설정 > 프린터 및 스캐너 > 인쇄 기본 설정]에서 이 크기를 "
+            "사용자 정의 용지로 추가하세요."
+        )
+        self.support_label.setStyleSheet(f"background:#FFF7E6; color:#9A5B00; {style}")
 
     @staticmethod
     def _millimeter_box(value: float, minimum: float, maximum: float) -> QDoubleSpinBox:
@@ -918,7 +973,7 @@ class MainWindow(QMainWindow):
             # 인쇄 대화상자가 용지를 A4로 되돌려도 라벨 규격을 다시 강제한다.
             apply_label_page(printer, self.config.label)
         try:
-            print_box_labels(printer, group, items, numbers)
+            print_box_labels(printer, group, items, numbers, self.config.label)
         except BeyondPackError as exc:
             self._error(f"{exc} [{exc.code}]")
             return ""
@@ -953,10 +1008,33 @@ class MainWindow(QMainWindow):
             self._error(f"설정을 저장하지 못했습니다: {exc} [BP-CFG-002]")
             return
         label = self.config.label
+        warning = self._label_page_warning()
+        if warning:
+            self._error(warning)
+            return
         self._success(
             f"라벨 설정 저장: {label.printer_name or '인쇄할 때 선택'} · "
             f"{label.width_mm:g}×{label.height_mm:g}mm · "
             f"확정 시 자동출력 {'켬' if label.auto_print else '끔'}"
+        )
+
+    def _label_page_warning(self) -> str:
+        """지정한 프린터가 라벨 용지 크기를 실제로 받아들이는지 확인한다."""
+        label = self.config.label
+        name = label.printer_name.strip()
+        if not name:
+            return ""
+        info = QPrinterInfo.printerInfo(name)
+        if info.isNull():
+            return f"라벨 프린터 '{name}'를 찾을 수 없습니다. [BP-PRINT-002]"
+        applied = apply_label_page(QPrinter(info, QPrinter.HighResolution), label)
+        if label.matches_page(applied.width(), applied.height()):
+            return ""
+        return (
+            f"'{name}'가 {label.width_mm:g}×{label.height_mm:g}mm 용지를 받아들이지 않습니다"
+            f"(현재 {applied.width():.0f}×{applied.height():.0f}mm). "
+            "Windows [설정 > 프린터 및 스캐너 > 인쇄 기본 설정]에서 이 크기의 "
+            "사용자 정의 용지를 등록한 뒤 다시 저장하세요. [BP-PRINT-005]"
         )
 
     @Slot()
