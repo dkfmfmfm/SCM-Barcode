@@ -172,6 +172,97 @@ class PackagingRepository:
         with self._connect() as conn:
             return self._next_box_number(conn, normalize_shipment_code(shipment_code))
 
+    def recent_shipments(self, limit: int = 30) -> list[str]:
+        """박스를 확정한 적이 있는 출고건을 최근 순으로 돌려준다.
+
+        문서번호를 다시 타이핑하다 한 글자만 달라져도 박스번호가 1부터 다시
+        시작하므로, 작업자가 목록에서 고를 수 있게 한다.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.shipment_code, MAX(g.created_at) AS last_at
+                FROM packaging_jobs j
+                JOIN box_groups g ON g.job_id = j.job_id
+                WHERE j.shipment_code <> ''
+                GROUP BY j.shipment_code
+                ORDER BY last_at DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [str(row["shipment_code"]) for row in rows]
+
+    def shipment_groups(self, shipment_code: str) -> list[dict]:
+        """출고건에서 확정된 박스 묶음을 박스번호 순으로 돌려준다."""
+        code = normalize_shipment_code(shipment_code)
+        if not code:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT g.box_group_id, g.box_start_no, g.box_count, g.weight_kg,
+                       g.length_cm, g.width_cm, g.height_cm, g.created_at,
+                       j.operator_name,
+                       COUNT(i.id) AS item_count,
+                       COALESCE(SUM(i.qty_per_box), 0) AS total_qty,
+                       MIN(i.item_code) AS first_item_code,
+                       MIN(i.product_name) AS first_product_name
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                LEFT JOIN box_items i ON i.box_group_id = g.box_group_id
+                WHERE j.shipment_code = ?
+                GROUP BY g.box_group_id
+                ORDER BY g.box_start_no
+                """,
+                (code,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def shipment_rows(self, shipment_code: str) -> list[dict]:
+        """출고건 전체를 구성품 단위로 펼쳐 돌려준다. Excel 내보내기용."""
+        code = normalize_shipment_code(shipment_code)
+        if not code:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.shipment_code, j.job_id, j.created_at, j.operator_name,
+                       j.product_db_version, j.app_version, j.status,
+                       g.box_group_id, g.box_start_no, g.box_count,
+                       g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
+                       i.fnsku, i.item_code, i.sku, i.country_code, i.country_name,
+                       i.product_name, i.qty_per_box, i.source_modified_at
+                FROM packaging_jobs j
+                JOIN box_groups g ON g.job_id = j.job_id
+                JOIN box_items i ON i.box_group_id = g.box_group_id
+                WHERE j.shipment_code = ?
+                ORDER BY g.box_start_no, i.id
+                """,
+                (code,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def box_group(self, box_group_id: str) -> tuple[dict, list[dict]] | None:
+        """박스 묶음 하나와 구성품을 돌려준다. 지난 박스 재출력에 쓴다."""
+        with self._connect() as conn:
+            group = conn.execute(
+                """
+                SELECT g.*, j.shipment_code
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                WHERE g.box_group_id = ?
+                """,
+                (box_group_id,),
+            ).fetchone()
+            if not group:
+                return None
+            items = conn.execute(
+                "SELECT * FROM box_items WHERE box_group_id = ? ORDER BY id",
+                (box_group_id,),
+            ).fetchall()
+        return dict(group), [dict(row) for row in items]
+
     def save_box_group(
         self, job_id: str, value: BoxGroupInput, operator_name: str
     ) -> SavedBoxGroup:

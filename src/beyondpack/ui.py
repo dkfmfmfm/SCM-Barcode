@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from decimal import Decimal
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QStringListModel, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QKeySequence, QPageSize
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -28,12 +30,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -43,7 +48,7 @@ from .cache import ProductCacheRepository
 from .config import AppConfig, LabelSettings, save_config
 from .diagnostics import create_diagnostic_bundle
 from .errors import BeyondPackError, PackagingValidationError
-from .exporter import export_job_xlsx
+from .exporter import export_shipment_xlsx
 from .labels import box_numbers
 from .models import BoxGroupInput, BoxItem, Product
 from .normalization import normalize_shipment_code, positive_decimal, positive_int
@@ -266,6 +271,7 @@ class MainWindow(QMainWindow):
         self._refresh_country_options()
         self._restore_draft()
         self._refresh_next_box_label()
+        self._refresh_shipment_view()
         self._show_initial_cache_state()
         if auto_sync:
             QTimer.singleShot(150, self.sync_now)
@@ -280,7 +286,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("BEYOND PACK")
         title.setObjectName("brandTitle")
-        subtitle = QLabel("국가 + FNSKU 기반 오프라인 우선 포장 작업")
+        subtitle = QLabel("오프라인 우선 포장 작업")
         subtitle.setObjectName("subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -288,7 +294,7 @@ class MainWindow(QMainWindow):
         header.addStretch()
         header.addWidget(QLabel("작업 국가"))
         self.country_combo = QComboBox()
-        self.country_combo.setMinimumWidth(175)
+        self.country_combo.setMinimumWidth(132)
         self.country_combo.setMinimumHeight(42)
         self.country_combo.setObjectName("countrySelector")
         self.country_combo.currentIndexChanged.connect(self._country_changed)
@@ -296,15 +302,21 @@ class MainWindow(QMainWindow):
         header.addWidget(QLabel("작업자"))
         self.operator_input = QLineEdit(self.config.operator_name)
         self.operator_input.setPlaceholderText("이름 또는 사번")
-        self.operator_input.setMaximumWidth(180)
+        self.operator_input.setMaximumWidth(112)
         header.addWidget(self.operator_input)
         header.addWidget(QLabel("출고건"))
         self.shipment_input = QLineEdit()
         self.shipment_input.setObjectName("shipmentInput")
         self.shipment_input.setPlaceholderText("출고건 번호를 스캔·입력")
-        self.shipment_input.setMaximumWidth(200)
+        self.shipment_input.setMaximumWidth(150)
         self.shipment_input.setMinimumHeight(42)
         self.shipment_input.setClearButtonEnabled(True)
+        self.shipment_completer_model = QStringListModel(self)
+        completer = QCompleter(self.shipment_completer_model, self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.shipment_input.setCompleter(completer)
         self.shipment_input.textChanged.connect(self._shipment_changed)
         header.addWidget(self.shipment_input)
         self.next_box_label = QLabel()
@@ -312,7 +324,7 @@ class MainWindow(QMainWindow):
         self.next_box_label.setMinimumWidth(96)
         self.next_box_label.setAlignment(Qt.AlignCenter)
         header.addWidget(self.next_box_label)
-        self.update_button = QPushButton("F2  Google Sheet 업데이트")
+        self.update_button = QPushButton("F2  상품 업데이트")
         self.update_button.clicked.connect(self.sync_now)
         header.addWidget(self.update_button)
         self.sheet_settings_button = QPushButton("Sheet 설정")
@@ -358,11 +370,11 @@ class MainWindow(QMainWindow):
         product_grid = QGridLayout()
         self.product_fields: dict[str, QLineEdit] = {}
         specs = [
-            ("product_name", "품목명", 0, 0, 1, 3),
+            ("product_name", "품목명", 0, 0, 1, 4),
             ("item_code", "품목코드", 1, 0, 1, 1),
             ("sku", "SKU", 1, 1, 1, 1),
             ("fnsku", "FNSKU", 1, 2, 1, 1),
-            ("country_name", "국가", 2, 0, 1, 1),
+            ("country_name", "국가", 1, 3, 1, 1),
         ]
         for key, label, row, column, row_span, col_span in specs:
             box = QVBoxLayout()
@@ -393,10 +405,15 @@ class MainWindow(QMainWindow):
         self.add_item_button.clicked.connect(self.add_current_item)
         add_row.addWidget(self.add_item_button, 1)
         lookup_layout.addLayout(add_row)
-        left.addWidget(lookup_group)
+        lookup_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        left.addWidget(lookup_group, 0)
 
-        items_group = QGroupBox("2. 박스 구성품")
-        items_layout = QVBoxLayout(items_group)
+        # 구성품과 출고건 현황을 탭으로 묶는다. 두 표를 세로로 쌓으면 1120x760
+        # 최소 창에서 위쪽 입력 영역이 눌려 겹친다.
+        self.work_tabs = QTabWidget()
+        items_page = QWidget()
+        items_layout = QVBoxLayout(items_page)
+        items_layout.setContentsMargins(0, 10, 0, 0)
         self.items_table = QTableWidget(0, 6)
         self.items_table.setHorizontalHeaderLabels(["FNSKU", "품목코드", "SKU", "국가", "품목명", "EA/BOX"])
         self.items_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -406,18 +423,53 @@ class MainWindow(QMainWindow):
         for col in range(6):
             header_view.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         header_view.setSectionResizeMode(4, QHeaderView.Stretch)
+        self.items_table.setMinimumHeight(84)
         items_layout.addWidget(self.items_table)
         remove_button = QPushButton("선택 상품 제거")
         remove_button.clicked.connect(self.remove_selected_item)
         items_layout.addWidget(remove_button, alignment=Qt.AlignRight)
-        left.addWidget(items_group, 1)
+        self.work_tabs.addTab(items_page, "2. 박스 구성품")
+
+        progress_page = QWidget()
+        progress_layout = QVBoxLayout(progress_page)
+        progress_layout.setContentsMargins(0, 10, 0, 0)
+        self.progress_summary = QLabel()
+        self.progress_summary.setObjectName("progressSummary")
+        self.progress_summary.setWordWrap(True)
+        progress_layout.addWidget(self.progress_summary)
+        self.progress_table = QTableWidget(0, 6)
+        self.progress_table.setHorizontalHeaderLabels(
+            ["박스번호", "구성품", "EA/BOX", "무게", "규격(가로×세로×높이)", "확정시각"]
+        )
+        self.progress_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.progress_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.progress_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.progress_table.verticalHeader().setVisible(False)
+        self.progress_table.setAlternatingRowColors(True)
+        self.progress_table.setMinimumHeight(104)
+        progress_header = self.progress_table.horizontalHeader()
+        for column in range(6):
+            progress_header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        progress_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.progress_table.itemSelectionChanged.connect(self._progress_selection_changed)
+        progress_layout.addWidget(self.progress_table)
+        self.reprint_selected_button = QPushButton("선택 박스 라벨 재출력")
+        self.reprint_selected_button.setEnabled(False)
+        self.reprint_selected_button.clicked.connect(self.print_selected_group)
+        progress_layout.addWidget(self.reprint_selected_button, alignment=Qt.AlignRight)
+        self.work_tabs.addTab(progress_page, "4. 출고건 작업 현황")
+        left.addWidget(self.work_tabs, 1)
 
         package_group = QGroupBox("3. 포장정보 입력")
         form = QFormLayout(package_group)
-        form.setVerticalSpacing(13)
+        form.setVerticalSpacing(8)
         self.box_count = QSpinBox()
         self.box_count.setObjectName("boxCountInput")
-        self.box_count.setRange(1, 99999)
+        # 미입력을 빈칸으로 보여 준다. 기본값 1은 그 자체가 올바른 값이어서
+        # 작업자가 박스수량을 넣었는지 화면으로 구분할 수 없었다.
+        # 빈 문자열은 Qt에서 "특수값 표시 안 함"으로 해석되므로 공백 한 칸을 쓴다.
+        self.box_count.setRange(0, 99999)
+        self.box_count.setSpecialValueText(" ")
         self.box_count.setSingleStep(1)
         self.box_count.setSuffix(" BOX")
         self.weight = self._decimal_box("weightInput", " kg / BOX", 3, self.config.weight_max_kg)
@@ -443,23 +495,25 @@ class MainWindow(QMainWindow):
         reset_button.clicked.connect(self.reset_current)
         print_button = QPushButton("F8  마지막 라벨 재출력")
         print_button.clicked.connect(self.print_last_labels)
-        export_button = QPushButton("작업 Excel 저장")
+        export_button = QPushButton("출고건 Excel 저장")
         export_button.clicked.connect(self.export_current_job)
-        label_settings_button = QPushButton("라벨 설정")
-        label_settings_button.clicked.connect(self.configure_labels)
-        test_label_button = QPushButton("테스트 라벨 출력")
-        test_label_button.clicked.connect(self.print_test_label)
-        self.excel_import_button = QPushButton("Excel 비상 업데이트")
-        self.excel_import_button.clicked.connect(self.import_excel_products)
-        diagnostic_button = QPushButton("관리자 진단파일 생성")
-        diagnostic_button.clicked.connect(self.create_diagnostics)
+        # 설정·비상 업데이트·진단은 작업 중에 쓰지 않는다. 한 버튼에 모아
+        # 오작동을 줄이고 작업 화면의 세로 공간을 비운다.
+        admin_button = QPushButton("설정·관리자 도구  ▾")
+        admin_menu = QMenu(admin_button)
+        for text, callback in (
+            ("라벨 설정", self.configure_labels),
+            ("테스트 라벨 출력", self.print_test_label),
+            ("Excel 비상 업데이트", self.import_excel_products),
+            ("관리자 진단파일 생성", self.create_diagnostics),
+        ):
+            admin_menu.addAction(text, callback)
+        self.excel_import_action = admin_menu.actions()[2]
+        admin_button.setMenu(admin_menu)
         utility_layout.addWidget(reset_button, 0, 0)
         utility_layout.addWidget(print_button, 0, 1)
-        utility_layout.addWidget(label_settings_button, 1, 0)
-        utility_layout.addWidget(test_label_button, 1, 1)
-        utility_layout.addWidget(export_button, 2, 0)
-        utility_layout.addWidget(self.excel_import_button, 2, 1)
-        utility_layout.addWidget(diagnostic_button, 3, 0, 1, 2)
+        utility_layout.addWidget(export_button, 1, 0)
+        utility_layout.addWidget(admin_button, 1, 1)
         right.addWidget(utility_group)
         right.addStretch()
 
@@ -490,7 +544,7 @@ class MainWindow(QMainWindow):
     ) -> QWidget:
         box.setButtonSymbols(QAbstractSpinBox.NoButtons)
         box.setAlignment(Qt.AlignRight)
-        box.setMinimumHeight(46)
+        box.setMinimumHeight(40)
         box.setMinimumWidth(130)
 
         wrapper = QWidget()
@@ -638,7 +692,7 @@ class MainWindow(QMainWindow):
         self._active_sync_label = source_label
         self._set_sync_state("SYNCING", f"{source_label}에서 최신 상품 CSV를 확인하고 있습니다.")
         self.update_button.setEnabled(False)
-        self.excel_import_button.setEnabled(False)
+        self.excel_import_action.setEnabled(False)
         self.sheet_settings_button.setEnabled(False)
         thread = QThread(self)
         worker = SyncWorker(
@@ -666,7 +720,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _sync_finished(self, result: SyncResult) -> None:
         self.update_button.setEnabled(True)
-        self.excel_import_button.setEnabled(True)
+        self.excel_import_action.setEnabled(True)
         self.sheet_settings_button.setEnabled(True)
         self.cache_blocked = result.state == "NO_DATA"
         display_state = result.state
@@ -813,6 +867,7 @@ class MainWindow(QMainWindow):
         else:
             self.items.append(BoxItem.from_product(self.current_product, qty))
         self._refresh_items_table()
+        self.work_tabs.setCurrentIndex(0)
         self._clear_scan(keep_message=True)
         self._success("구성품에 추가했습니다. 다음 FNSKU를 스캔하거나 포장정보를 입력하세요.")
         self._save_draft()
@@ -828,6 +883,9 @@ class MainWindow(QMainWindow):
         self.fnsku_input.setFocus()
 
     def _refresh_items_table(self) -> None:
+        self.work_tabs.setTabText(
+            0, f"2. 박스 구성품 ({len(self.items)})" if self.items else "2. 박스 구성품"
+        )
         self.items_table.setRowCount(len(self.items))
         for row, item in enumerate(self.items):
             values = [item.fnsku, item.item_code, item.sku, item.country_name, item.product_name, str(item.qty_per_box)]
@@ -845,11 +903,108 @@ class MainWindow(QMainWindow):
         저장하지 않도록 현재 작업을 끊는다.
         """
         code = self._shipment_code()
-        if code != self.job_shipment:
+        if self.job_id and code != self.job_shipment:
             self.job_id = None
-            self.job_shipment = code
         self._refresh_next_box_label()
+        self._refresh_shipment_view()
         self._save_draft()
+
+    @staticmethod
+    def _local_time(value: object) -> str:
+        """UTC로 저장한 시각을 현장 시간으로 보여 준다."""
+        text = str(value or "")
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone().strftime("%m-%d %H:%M")
+
+    @staticmethod
+    def _decimal_text(value: object) -> Decimal:
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return Decimal(0)
+
+    def _refresh_shipment_view(self) -> None:
+        """확정된 박스를 출고건 단위로 누적해 보여 준다.
+
+        작업자가 별도 파일을 열지 않고도 지금까지 몇 번 박스까지 나갔는지,
+        각 박스에 무엇이 담겼는지 화면에서 바로 확인할 수 있게 한다.
+        """
+        code = self._shipment_code()
+        groups = self.packaging.shipment_groups(code) if code else []
+        self.progress_table.setRowCount(len(groups))
+        total_boxes = 0
+        total_weight = Decimal(0)
+        for row, group in enumerate(groups):
+            count = int(group["box_count"])
+            start = int(group["box_start_no"])
+            weight = self._decimal_text(group["weight_kg"])
+            total_boxes += count
+            total_weight += weight * count
+            if int(group["item_count"] or 0) == 1:
+                contents = str(group["first_item_code"] or group["first_product_name"] or "-")
+            else:
+                contents = f"합포 {int(group['item_count'] or 0)}품목"
+            values = [
+                f"#{start}" if count == 1 else f"#{start}~#{start + count - 1}",
+                contents,
+                str(int(group["total_qty"] or 0)),
+                f"{weight:g} kg",
+                f"{self._decimal_text(group['length_cm']):g}×"
+                f"{self._decimal_text(group['width_cm']):g}×"
+                f"{self._decimal_text(group['height_cm']):g}",
+                self._local_time(group["created_at"]),
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                if column:
+                    cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                self.progress_table.setItem(row, column, cell)
+            self.progress_table.item(row, 0).setData(Qt.UserRole, group["box_group_id"])
+        self.progress_table.scrollToBottom()
+        self._progress_selection_changed()
+        self.work_tabs.setTabText(
+            1,
+            f"4. 출고건 작업 현황 ({total_boxes}박스)" if groups else "4. 출고건 작업 현황",
+        )
+        if not code:
+            self.progress_summary.setText("출고건 번호를 입력하면 이 출고건의 작업 현황이 표시됩니다.")
+        elif groups:
+            self.progress_summary.setText(
+                f"출고건 {code} · 확정 {total_boxes}박스 · 총 중량 {total_weight:g} kg · "
+                f"다음 박스 #{self.packaging.next_box_number(code)}"
+            )
+        else:
+            self.progress_summary.setText(
+                f"출고건 {code} · 아직 확정된 박스가 없습니다. 첫 박스는 #1입니다."
+            )
+        self.shipment_completer_model.setStringList(self.packaging.recent_shipments())
+
+    @Slot()
+    def _progress_selection_changed(self) -> None:
+        self.reprint_selected_button.setEnabled(self.progress_table.currentRow() >= 0)
+
+    @Slot()
+    def print_selected_group(self) -> None:
+        row = self.progress_table.currentRow()
+        if row < 0:
+            self._error("재출력할 박스 행을 선택하세요. [BP-PRINT-001]", beep=False)
+            return
+        cell = self.progress_table.item(row, 0)
+        saved = self.packaging.box_group(str(cell.data(Qt.UserRole))) if cell else None
+        if not saved:
+            self._error("선택한 박스를 찾을 수 없습니다. [BP-PRINT-001]", beep=False)
+            return
+        group, items = saved
+        message = self._print_box_labels(
+            group, items, ask=not self.config.label.printer_name.strip()
+        )
+        if message:
+            self._success("재출력 " + message)
 
     def _refresh_next_box_label(self) -> None:
         code = self._shipment_code()
@@ -906,7 +1061,7 @@ class MainWindow(QMainWindow):
         self.items.clear()
         self._refresh_items_table()
         self._clear_scan(keep_message=True)
-        self.box_count.setValue(1)
+        self.box_count.setValue(0)
         for widget in (self.weight, self.length, self.width, self.height):
             widget.setValue(0)
         printed = ""
@@ -918,6 +1073,8 @@ class MainWindow(QMainWindow):
             group, items = self.last_saved
             printed = self._print_box_labels(group, items, ask=False)
         self._refresh_next_box_label()
+        self._refresh_shipment_view()
+        self.work_tabs.setCurrentIndex(1)
         self._success(
             f"박스 #{saved.box_start_no}~#{saved.box_end_no} 저장 완료. "
             + (printed if printed else "F8로 라벨을 출력하거나 다음 작업을 스캔하세요.")
@@ -932,7 +1089,7 @@ class MainWindow(QMainWindow):
         self.items.clear()
         self._refresh_items_table()
         self._clear_scan(keep_message=True)
-        self.box_count.setValue(1)
+        self.box_count.setValue(0)
         for widget in (self.weight, self.length, self.width, self.height):
             widget.setValue(0)
         self.packaging.clear_draft(self.DRAFT_KEY)
@@ -1066,19 +1223,24 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def export_current_job(self) -> None:
-        if not self.job_id:
-            self._error("Excel로 저장할 포장 작업이 없습니다. [BP-EXPORT-001]", beep=False)
+        # 한 출고건은 날짜와 프로그램 실행을 넘나들며 이어지므로 출고건 전체를 낸다.
+        shipment = self._shipment_code()
+        if not shipment:
+            self._error("먼저 출고건 번호를 입력하세요. [BP-EXPORT-001]", beep=False)
+            self.shipment_input.setFocus()
             return
-        suggested = str(Path.home() / "Documents" / f"BeyondPack-{self.job_id[:8]}.xlsx")
-        filename, _ = QFileDialog.getSaveFileName(self, "포장실적 Excel 저장", suggested, "Excel (*.xlsx)")
+        suggested = str(Path.home() / "Documents" / f"BeyondPack-{shipment}.xlsx")
+        filename, _ = QFileDialog.getSaveFileName(
+            self, f"출고건 {shipment} 포장실적 Excel 저장", suggested, "Excel (*.xlsx)"
+        )
         if not filename:
             return
         try:
-            count = export_job_xlsx(self.packaging, self.job_id, Path(filename))
+            count = export_shipment_xlsx(self.packaging, shipment, Path(filename))
         except Exception as exc:
             self._error(f"Excel 저장 실패: {exc} [BP-EXPORT-002]")
             return
-        self._success(f"Excel 저장 완료: {count}개 구성품 행")
+        self._success(f"출고건 {shipment} Excel 저장 완료: {count}개 구성품 행")
 
     @Slot()
     def create_diagnostics(self) -> None:
@@ -1125,7 +1287,7 @@ class MainWindow(QMainWindow):
             self.items = [BoxItem(**item) for item in draft.get("items", [])]
             if self.items:
                 self._select_country(self.items[0].country_code)
-            self.box_count.setValue(int(draft.get("box_count", 1)))
+            self.box_count.setValue(int(draft.get("box_count", 0)))
             self.weight.setValue(float(draft.get("weight", 0)))
             self.length.setValue(float(draft.get("length", 0)))
             self.width.setValue(float(draft.get("width", 0)))
@@ -1164,7 +1326,7 @@ class MainWindow(QMainWindow):
     def _stylesheet() -> str:
         return """
         QMainWindow, QWidget { background: #F7F5F1; color: #0B1F3A; font-family: 'Pretendard', 'Malgun Gothic'; font-size: 14px; }
-        QLabel#brandTitle { font-size: 25px; font-weight: 800; letter-spacing: 3px; }
+        QLabel#brandTitle { font-size: 20px; font-weight: 800; letter-spacing: 1px; }
         QLabel#subtitle { color: #667085; }
         QGroupBox { background: white; border: 1px solid #DDD8CE; border-radius: 9px; margin-top: 13px; padding: 13px; font-weight: 700; }
         QGroupBox::title { subcontrol-origin: margin; left: 13px; padding: 0 5px; }
@@ -1185,5 +1347,9 @@ class MainWindow(QMainWindow):
         QPushButton:disabled { background: #E5E7EB; color: #9CA3AF; }
         QTableWidget { background: white; border: 1px solid #DDD8CE; gridline-color: #E8E3DA; alternate-background-color: #FAF8F4; }
         QHeaderView::section { background: #0B1F3A; color: white; padding: 8px; border: 0; font-weight: 700; }
+        QTabWidget::pane { background: white; border: 1px solid #DDD8CE; border-radius: 9px; }
+        QTabBar::tab { background: #EFEBE3; border: 1px solid #DDD8CE; border-bottom: 0; border-top-left-radius: 7px; border-top-right-radius: 7px; padding: 9px 16px; margin-right: 4px; font-weight: 700; color: #667085; }
+        QTabBar::tab:selected { background: white; color: #0B1F3A; }
+        QLabel#progressSummary { background:#F1F4F8; color:#0B1F3A; border:1px solid #DDD8CE; border-radius:6px; padding:8px; font-weight:700; }
         QLabel#nextAction { background:#EAF2FF; color:#1D4ED8; border:1px solid #9BBDF7; border-radius:7px; padding:12px; font-weight:700; }
         """

@@ -76,6 +76,74 @@ class PackagingTests(unittest.TestCase):
         group, _items = self.repo.last_group(job)
         self.assertEqual(group["shipment_code"], "FBA15ABC")
 
+    def test_shipment_progress_accumulates_across_jobs(self):
+        first = self.repo.create_job("반장", "V1", "2.2.7", "1B")
+        self.repo.save_box_group(first, self._group(3), "반장")
+        self.repo.save_box_group(first, self._group(2), "반장")
+        # 익일 재개: 프로그램을 다시 실행해 새 작업이 만들어져도 같은 출고건이다.
+        second = self.repo.create_job("반장", "V1", "2.2.7", "1B")
+        self.repo.save_box_group(second, self._group(4), "반장")
+        groups = self.repo.shipment_groups("1B")
+        self.assertEqual(
+            [(g["box_start_no"], g["box_count"]) for g in groups], [(1, 3), (4, 2), (6, 4)]
+        )
+        self.assertEqual(sum(int(g["box_count"]) for g in groups), 9)
+
+    def test_shipment_progress_summarizes_mixed_boxes(self):
+        job = self.repo.create_job("반장", "V1", "2.2.7", "1B")
+        mixed = BoxGroupInput(
+            2,
+            Decimal("8.4"),
+            Decimal("42"),
+            Decimal("31"),
+            Decimal("24"),
+            (
+                BoxItem("X1", "A1", "SKU1", "US", "미국", "상품1", 2),
+                BoxItem("X2", "A2", "SKU2", "US", "미국", "상품2", 3),
+            ),
+        )
+        self.repo.save_box_group(job, mixed, "반장")
+        group = self.repo.shipment_groups("1B")[0]
+        self.assertEqual(int(group["item_count"]), 2)
+        self.assertEqual(int(group["total_qty"]), 5)
+
+    def test_shipment_progress_is_empty_for_an_unused_shipment(self):
+        self.assertEqual(self.repo.shipment_groups("NONE"), [])
+        self.assertEqual(self.repo.shipment_groups(""), [])
+
+    def test_recent_shipments_are_listed_newest_first(self):
+        for code in ("1B", "2B", "3B"):
+            job = self.repo.create_job("반장", "V1", "2.2.7", code)
+            self.repo.save_box_group(job, self._group(1), "반장")
+        empty = self.repo.create_job("반장", "V1", "2.2.7", "4B")
+        self.assertEqual(set(self.repo.recent_shipments()), {"1B", "2B", "3B"})
+        self.assertNotIn("4B", self.repo.recent_shipments())
+        self.assertIsNotNone(empty)
+
+    def test_shipment_export_covers_every_job_of_the_shipment(self):
+        first = self.repo.create_job("반장", "V1", "2.2.7", "1B")
+        self.repo.save_box_group(first, self._group(3), "반장")
+        second = self.repo.create_job("반장", "V1", "2.2.7", "1B")
+        self.repo.save_box_group(second, self._group(2), "반장")
+        other = self.repo.create_job("반장", "V1", "2.2.7", "2B")
+        self.repo.save_box_group(other, self._group(1), "반장")
+        rows = self.repo.shipment_rows("1B")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["shipment_code"] for row in rows}, {"1B"})
+        self.assertEqual(len(self.repo.job_rows(first)), 1)
+
+    def test_any_saved_box_group_can_be_reprinted(self):
+        job = self.repo.create_job("반장", "V1", "2.2.7", "1B")
+        first = self.repo.save_box_group(job, self._group(3), "반장")
+        self.repo.save_box_group(job, self._group(2), "반장")
+        found = self.repo.box_group(first.box_group_id)
+        self.assertIsNotNone(found)
+        group, items = found
+        self.assertEqual(int(group["box_start_no"]), 1)
+        self.assertEqual(group["shipment_code"], "1B")
+        self.assertEqual(len(items), 1)
+        self.assertIsNone(self.repo.box_group("없는-아이디"))
+
     def test_existing_database_without_shipment_column_is_migrated(self):
         path = Path(self.temp.name) / "legacy.db"
         # sqlite3 연결을 with 문에만 넘기면 커밋만 하고 연결은 열린 채로 남는다.
