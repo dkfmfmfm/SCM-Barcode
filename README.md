@@ -63,6 +63,7 @@ SchemaVersion
 | 문서 | 대상 |
 |---|---|
 | [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md) | 설치·화면·작업 흐름·박스번호·라벨·오류대응 전체 |
+| [`docs/FIELD_CHECKLIST.md`](docs/FIELD_CHECKLIST.md) | **설치 후 현장 도입 점검표** — 인쇄해서 항목별로 확인 |
 | [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md) | 현장 작업자 1페이지 요약 |
 | [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) | PC 세팅·상품 업데이트·실적 보관·UAT |
 | [`docs/GOOGLE_SHEETS_SETUP.md`](docs/GOOGLE_SHEETS_SETUP.md) | 상품 마스터 작성 기준 |
