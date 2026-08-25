@@ -58,6 +58,21 @@ FIELDS = [
 
 
 def export_job_xlsx(repo: PackagingRepository, job_id: str, path: Path) -> int:
+    return export_rows_xlsx(repo.job_rows(job_id), path)
+
+
+def export_shipment_xlsx(
+    repo: PackagingRepository, shipment_code: str, path: Path
+) -> int:
+    """출고건 전체를 Excel로 저장한다.
+
+    한 출고건은 날짜와 프로그램 실행을 넘나들며 여러 작업으로 나뉠 수 있으므로,
+    실행 단위가 아니라 출고건 단위로 내보내야 실적이 잘리지 않는다.
+    """
+    return export_rows_xlsx(repo.shipment_rows(shipment_code), path)
+
+
+def export_rows_xlsx(rows: list[dict], path: Path) -> int:
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
@@ -65,7 +80,6 @@ def export_job_xlsx(repo: PackagingRepository, job_id: str, path: Path) -> int:
     except ImportError as exc:
         raise ConfigurationError("Excel 저장을 위해 openpyxl 패키지를 설치하세요.") from exc
 
-    rows = repo.job_rows(job_id)
     if not rows:
         raise ValueError("저장된 박스가 없어 Excel로 내보낼 수 없습니다.")
     workbook = Workbook()
