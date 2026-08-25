@@ -54,11 +54,16 @@ SchemaVersion
 
 1. Google Sheet의 `BeyondPack` 탭 첫 행에 위 열을 넣는다.
 2. 설치 후 바탕화면의 `BeyondPack`을 실행한다.
-3. 상단 `Sheet 설정`을 누르고 해당 탭이 열린 Google Sheet 주소를 붙여넣는다.
-5. `라벨 설정`에서 라벨 프린터와 라벨 롤의 실제 크기(mm)를 지정하고 `테스트 라벨 출력`으로 확인한다.
-4. 프로그램이 CSV를 자동 다운로드하고 검증한 뒤 국가 목록을 표시한다.
+3. 상단 `Sheet 설정`을 누르고 해당 탭이 열린 Google Sheet 주소를 붙여넣는다. 프로그램이 CSV를 자동 다운로드하고 검증한 뒤 국가 목록을 표시한다.
+4. **Windows 프린터 드라이버에 라벨 크기(기본 40×25mm)를 먼저 등록한다.** 등록하지 않으면 드라이버가 크기 지정을 거부해 A4로 인쇄된다.
+5. `설정·관리자 도구 > 라벨 설정`에서 프린터와 크기를 지정한다. 안내줄이 초록인지 확인하고 `테스트 라벨 출력`으로 검증한다.
 
-전체 설치·설정·단품·합포·라벨·오류대응 절차는 [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)를 참고한다. 상품 마스터 작성 세부 내용은 [`docs/GOOGLE_SHEETS_SETUP.md`](docs/GOOGLE_SHEETS_SETUP.md)를 따른다.
+| 문서 | 대상 |
+|---|---|
+| [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md) | 설치·화면·작업 흐름·박스번호·라벨·오류대응 전체 |
+| [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md) | 현장 작업자 1페이지 요약 |
+| [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) | PC 세팅·상품 업데이트·실적 보관·UAT |
+| [`docs/GOOGLE_SHEETS_SETUP.md`](docs/GOOGLE_SHEETS_SETUP.md) | 상품 마스터 작성 기준 |
 
 ## 데이터 위치
 
