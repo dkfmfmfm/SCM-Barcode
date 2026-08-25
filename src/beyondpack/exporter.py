@@ -21,6 +21,7 @@ HEADERS = [
     "가로(cm)",
     "세로(cm)",
     "높이(cm)",
+    "박스확정시각",
     "FNSKU",
     "품목코드",
     "SKU",
@@ -46,6 +47,7 @@ FIELDS = [
     "length_cm",
     "width_cm",
     "height_cm",
+    "box_created_at",
     "fnsku",
     "item_code",
     "sku",
@@ -93,11 +95,11 @@ def export_rows_xlsx(rows: list[dict], path: Path) -> int:
         cell.font = Font(color="FFFFFF", bold=True)
         cell.fill = fill
         cell.alignment = Alignment(horizontal="center")
-    table = Table(displayName="PackagingResults", ref=f"A1:V{len(rows) + 1}")
+    table = Table(displayName="PackagingResults", ref=f"A1:W{len(rows) + 1}")
     table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
     sheet.add_table(table)
     sheet.freeze_panes = "A2"
-    widths = [18, 22, 24, 14, 18, 12, 12, 22, 14, 12, 14, 12, 12, 12, 18, 16, 20, 12, 12, 38, 18, 24]
+    widths = [18, 22, 24, 14, 18, 12, 12, 22, 14, 12, 14, 12, 12, 12, 24, 18, 16, 20, 12, 12, 38, 18, 24]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
     path.parent.mkdir(parents=True, exist_ok=True)

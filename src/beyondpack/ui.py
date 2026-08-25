@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -44,13 +45,14 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from .backup import BackupResult, PackagingBackup, station_name
 from .cache import ProductCacheRepository
-from .config import AppConfig, LabelSettings, save_config
+from .config import AppConfig, BackupSettings, LabelSettings, save_config
 from .diagnostics import create_diagnostic_bundle
 from .errors import BeyondPackError, PackagingValidationError
 from .exporter import export_shipment_xlsx
 from .labels import box_numbers
-from .models import BoxGroupInput, BoxItem, Product
+from .models import BoxGroupInput, BoxItem, Product, utc_now_iso
 from .normalization import normalize_shipment_code, positive_decimal, positive_int
 from .packaging import PackagingRepository
 from .printing import apply_label_page, print_box_labels
@@ -102,6 +104,101 @@ class SyncWorker(QObject):
                 "",
             )
         self.finished.emit(result)
+
+
+class BackupWorker(QObject):
+    """백업은 공유 폴더가 느리거나 끊겨도 포장 작업을 멈추면 안 된다."""
+
+    finished = Signal(object)
+
+    def __init__(self, backup: PackagingBackup):
+        super().__init__()
+        self.backup = backup
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self.backup.run()
+        except Exception as exc:  # 백업 실패가 작업을 막지 않게 전부 흡수한다.
+            result = BackupResult(False, f"백업 실패: {exc}", utc_now_iso())
+        self.finished.emit(result)
+
+
+class BackupSettingsDialog(QDialog):
+    """포장 실적을 작업 PC 밖에 자동 복사할 위치를 지정한다."""
+
+    def __init__(self, settings: BackupSettings, station: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("자동 백업 설정")
+        self.setMinimumWidth(520)
+
+        self.enabled = QCheckBox("포장 실적을 지정한 위치에 자동으로 복사한다")
+        self.enabled.setChecked(settings.enabled)
+
+        self.directory_input = QLineEdit(settings.directory)
+        self.directory_input.setPlaceholderText(r"예: \\서버\물류\BeyondPack 또는 D:\백업")
+        self.directory_input.setMinimumHeight(36)
+        browse = QPushButton("폴더 선택")
+        browse.clicked.connect(self._choose_directory)
+        directory_row = QHBoxLayout()
+        directory_row.addWidget(self.directory_input, 1)
+        directory_row.addWidget(browse)
+
+        self.interval_input = QSpinBox()
+        self.interval_input.setRange(1, 240)
+        self.interval_input.setSuffix(" 분마다")
+        self.interval_input.setMinimumHeight(36)
+        self.interval_input.setValue(settings.interval_minutes)
+
+        self.keep_input = QSpinBox()
+        self.keep_input.setRange(1, 3650)
+        self.keep_input.setSuffix(" 일 보관")
+        self.keep_input.setMinimumHeight(36)
+        self.keep_input.setValue(settings.keep_days)
+
+        form = QFormLayout()
+        form.addRow("", self.enabled)
+        form.addRow("백업 위치", directory_row)
+        form.addRow("백업 주기", self.interval_input)
+        form.addRow("CSV 보관", self.keep_input)
+
+        guide = QLabel(
+            f"이 PC의 실적은 <b>{html.escape(station)}</b> 하위 폴더에 저장되므로 여러 작업대가 "
+            "같은 위치를 써도 서로 덮어쓰지 않습니다.<br>"
+            "· <b>packaging.db</b> — 포장기록 전체 사본. PC 교체·고장 시 이 파일로 복구합니다.<br>"
+            "· <b>packing-YYYYMMDD.csv</b> — 그날 확정한 박스 실적. Excel로 바로 열립니다.<br>"
+            "백업은 박스 확정 후와 설정한 주기마다, 프로그램 종료 시 자동으로 실행됩니다. "
+            "공유 폴더가 끊겨 있어도 포장 작업은 멈추지 않습니다."
+        )
+        guide.setWordWrap(True)
+        guide.setObjectName("fieldCaption")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+        buttons.button(QDialogButtonBox.Ok).setText("저장")
+        buttons.button(QDialogButtonBox.Cancel).setText("취소")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(guide)
+        layout.addWidget(buttons)
+
+    @Slot()
+    def _choose_directory(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "백업 위치 선택", self.directory_input.text() or str(Path.home())
+        )
+        if chosen:
+            self.directory_input.setText(chosen)
+
+    def settings(self) -> BackupSettings:
+        return BackupSettings(
+            directory=self.directory_input.text().strip(),
+            enabled=self.enabled.isChecked(),
+            interval_minutes=self.interval_input.value(),
+            keep_days=self.keep_input.value(),
+        )
 
 
 class LabelSettingsDialog(QDialog):
@@ -260,6 +357,9 @@ class MainWindow(QMainWindow):
         self.job_shipment = ""
         self.last_saved: tuple[dict, list[dict]] | None = None
         self.sync_thread: QThread | None = None
+        self.backup_thread: QThread | None = None
+        self.station = station_name()
+        self.last_backup: BackupResult | None = None
         self.cache_blocked = False
 
         self.setWindowTitle(f"BeyondPack {__version__} · BEYOND EARTH")
@@ -273,6 +373,7 @@ class MainWindow(QMainWindow):
         self._refresh_next_box_label()
         self._refresh_shipment_view()
         self._show_initial_cache_state()
+        self._start_backup_schedule()
         if auto_sync:
             QTimer.singleShot(150, self.sync_now)
 
@@ -341,6 +442,9 @@ class MainWindow(QMainWindow):
         self.sync_detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         banner_layout.addWidget(self.sync_state_label)
         banner_layout.addWidget(self.sync_detail_label, 1)
+        self.backup_label = QLabel()
+        self.backup_label.setObjectName("backupState")
+        banner_layout.addWidget(self.backup_label)
         layout.addWidget(self.sync_banner)
 
         body = QHBoxLayout()
@@ -502,13 +606,15 @@ class MainWindow(QMainWindow):
         admin_button = QPushButton("설정·관리자 도구  ▾")
         admin_menu = QMenu(admin_button)
         for text, callback in (
+            ("자동 백업 설정", self.configure_backup),
+            ("지금 백업", self.backup_now),
             ("라벨 설정", self.configure_labels),
             ("테스트 라벨 출력", self.print_test_label),
             ("Excel 비상 업데이트", self.import_excel_products),
             ("관리자 진단파일 생성", self.create_diagnostics),
         ):
             admin_menu.addAction(text, callback)
-        self.excel_import_action = admin_menu.actions()[2]
+        self.excel_import_action = admin_menu.actions()[4]
         admin_button.setMenu(admin_menu)
         utility_layout.addWidget(reset_button, 0, 0)
         utility_layout.addWidget(print_button, 0, 1)
@@ -605,6 +711,135 @@ class MainWindow(QMainWindow):
         self.autosave_timer.timeout.connect(self._save_draft)
         for widget in (self.box_count, self.weight, self.length, self.width, self.height):
             widget.valueChanged.connect(lambda _value: self.autosave_timer.start())
+
+    # ---- 포장 실적 자동 백업 -------------------------------------------------
+
+    def _start_backup_schedule(self) -> None:
+        """주기 백업과 확정 직후 백업을 건다.
+
+        확정마다 바로 쓰면 공유 폴더가 느릴 때 작업 리듬을 해치므로, 마지막
+        확정에서 잠시 쉰 뒤 한 번만 실행한다.
+        """
+        self.backup_timer = QTimer(self)
+        self.backup_timer.timeout.connect(lambda: self.run_backup("주기"))
+        self.backup_after_confirm = QTimer(self)
+        self.backup_after_confirm.setSingleShot(True)
+        self.backup_after_confirm.setInterval(20_000)
+        self.backup_after_confirm.timeout.connect(lambda: self.run_backup("확정"))
+        self._apply_backup_schedule()
+
+    def _apply_backup_schedule(self) -> None:
+        settings = self.config.backup
+        self.backup_timer.stop()
+        if settings.active:
+            self.backup_timer.start(max(1, settings.interval_minutes) * 60_000)
+        self._refresh_backup_label()
+
+    def _refresh_backup_label(self) -> None:
+        style = "border-radius:6px; padding:4px 9px; font-weight:700;"
+        if not self.config.backup.active:
+            self.backup_label.setText("백업 미설정")
+            self.backup_label.setToolTip(
+                "포장 실적이 이 PC에만 있습니다. "
+                "'설정·관리자 도구 > 자동 백업 설정'에서 백업 위치를 지정하세요."
+            )
+            self.backup_label.setStyleSheet(f"background:#FDECEC; color:#B91C1C; {style}")
+            return
+        result = self.last_backup
+        if result is None:
+            self.backup_label.setText("백업 대기")
+            self.backup_label.setToolTip(f"백업 위치: {self.config.backup.directory}")
+            self.backup_label.setStyleSheet(f"background:#F1EEE8; color:#667085; {style}")
+            return
+        if result.ok:
+            self.backup_label.setText(f"백업 {self._local_time(result.at)}")
+            self.backup_label.setStyleSheet(f"background:#E9F7EF; color:#166534; {style}")
+        else:
+            self.backup_label.setText("백업 실패")
+            self.backup_label.setStyleSheet(f"background:#FDECEC; color:#B91C1C; {style}")
+        self.backup_label.setToolTip(result.message)
+
+    @Slot()
+    def run_backup(self, reason: str = "수동") -> bool:
+        if not self.config.backup.active:
+            self._refresh_backup_label()
+            return False
+        if self.backup_thread and self.backup_thread.isRunning():
+            return False
+        thread = QThread(self)
+        worker = BackupWorker(
+            PackagingBackup(self.packaging, self.config.backup, self.station)
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._backup_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._backup_thread_finished)
+        self.backup_thread = thread
+        self._backup_worker = worker
+        self._backup_reason = reason
+        thread.start()
+        return True
+
+    @Slot(object)
+    def _backup_finished(self, result: BackupResult) -> None:
+        self.last_backup = result
+        self._refresh_backup_label()
+        if not result.ok:
+            self.statusBar().showMessage(result.message, 8000)
+        elif getattr(self, "_backup_reason", "") == "수동":
+            self._success(f"{result.message} · 실적 {result.rows:,}행")
+
+    @Slot()
+    def _backup_thread_finished(self) -> None:
+        self.backup_thread = None
+        if hasattr(self, "_backup_worker"):
+            del self._backup_worker
+
+    @Slot()
+    def backup_now(self) -> None:
+        if not self.config.backup.active:
+            self._error(
+                "백업 위치가 지정되지 않았습니다. "
+                "'설정·관리자 도구 > 자동 백업 설정'에서 먼저 지정하세요. [BP-BACKUP-001]"
+            )
+            return
+        if not self.run_backup("수동"):
+            self.statusBar().showMessage("백업이 이미 진행 중입니다.", 3000)
+
+    @Slot()
+    def configure_backup(self) -> None:
+        dialog = BackupSettingsDialog(self.config.backup, self.station, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.config.backup = dialog.settings()
+        try:
+            save_config(self.config, self.config_path)
+        except OSError as exc:
+            self._error(f"설정을 저장하지 못했습니다: {exc} [BP-CFG-002]")
+            return
+        self._apply_backup_schedule()
+        if self.config.backup.active:
+            self._success(
+                f"백업 설정 저장: {self.config.backup.directory} · "
+                f"{self.config.backup.interval_minutes}분마다"
+            )
+            self.run_backup("수동")
+        else:
+            self._success("자동 백업을 사용하지 않습니다.")
+
+    def closeEvent(self, event) -> None:
+        """종료 전에 마지막 백업을 시도한다.
+
+        공유 폴더가 응답하지 않아도 종료가 막히지 않도록 기다리는 시간을 둔다.
+        """
+        if self.config.backup.active and self.run_backup("종료"):
+            thread = self.backup_thread
+            if thread is not None:
+                thread.wait(5_000)
+        super().closeEvent(event)
 
     def _show_initial_cache_state(self) -> None:
         info = self.cache.info()
@@ -1074,6 +1309,7 @@ class MainWindow(QMainWindow):
             printed = self._print_box_labels(group, items, ask=False)
         self._refresh_next_box_label()
         self._refresh_shipment_view()
+        self.backup_after_confirm.start()
         self.work_tabs.setCurrentIndex(1)
         self._success(
             f"박스 #{saved.box_start_no}~#{saved.box_end_no} 저장 완료. "
@@ -1262,12 +1498,14 @@ class MainWindow(QMainWindow):
             "selected_country_code": self._selected_country_code(),
             "shipment_code": self._shipment_code(),
         }
-        if (
-            self.items
-            or payload["shipment_code"]
-            or any(payload[key] for key in ("weight", "length", "width", "height"))
+        # 출고건이나 국가만 들어 있는 상태는 복구할 작업이 아니다. 이것까지
+        # 저장하면 박스를 확정하고 정상 종료해도 다음 실행에서 복구 창이 뜬다.
+        if self.items or any(
+            payload[key] for key in ("weight", "length", "width", "height")
         ):
             self.packaging.save_draft(self.DRAFT_KEY, payload)
+        else:
+            self.packaging.clear_draft(self.DRAFT_KEY)
 
     def _restore_draft(self) -> None:
         draft = self.packaging.load_draft(self.DRAFT_KEY)
@@ -1350,6 +1588,7 @@ class MainWindow(QMainWindow):
         QTabWidget::pane { background: white; border: 1px solid #DDD8CE; border-radius: 9px; }
         QTabBar::tab { background: #EFEBE3; border: 1px solid #DDD8CE; border-bottom: 0; border-top-left-radius: 7px; border-top-right-radius: 7px; padding: 9px 16px; margin-right: 4px; font-weight: 700; color: #667085; }
         QTabBar::tab:selected { background: white; color: #0B1F3A; }
+        QLabel#backupState { font-size: 12px; }
         QLabel#progressSummary { background:#F1F4F8; color:#0B1F3A; border:1px solid #DDD8CE; border-radius:6px; padding:8px; font-weight:700; }
         QLabel#nextAction { background:#EAF2FF; color:#1D4ED8; border:1px solid #9BBDF7; border-radius:7px; padding:12px; font-weight:700; }
         """
