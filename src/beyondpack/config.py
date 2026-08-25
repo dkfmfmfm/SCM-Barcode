@@ -52,6 +52,24 @@ class LabelSettings:
 
 
 @dataclass(slots=True)
+class BackupSettings:
+    """포장 실적을 작업 PC 밖으로 복사하는 설정.
+
+    `packaging.db`는 이 PC에만 있어 디스크가 고장나면 복구할 수 없다. 공유
+    드라이브 등 다른 위치를 지정해 두면 주기적으로 사본을 남긴다.
+    """
+
+    directory: str = ""
+    enabled: bool = True
+    interval_minutes: int = 10
+    keep_days: int = 90
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and bool(self.directory.strip())
+
+
+@dataclass(slots=True)
 class AppConfig:
     source_type: str = "google_sheets"
     source_json_path: str = ""
@@ -64,6 +82,7 @@ class AppConfig:
     dimension_max_cm: float = 500.0
     google_sheets: GoogleSheetsSettings = field(default_factory=GoogleSheetsSettings)
     label: LabelSettings = field(default_factory=LabelSettings)
+    backup: BackupSettings = field(default_factory=BackupSettings)
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -74,17 +93,22 @@ def _from_dict(raw: dict[str, Any]) -> AppConfig:
     try:
         google_sheets = GoogleSheetsSettings(**raw.get("google_sheets", {}))
         label = LabelSettings(**raw.get("label", {}))
+        backup = BackupSettings(**raw.get("backup", {}))
     except TypeError as exc:
         raise ConfigurationError(f"config.json 필드가 올바르지 않습니다: {exc}") from exc
     values = {
-        k: v for k, v in raw.items() if k not in {"sharepoint", "google_sheets", "label"}
+        k: v
+        for k, v in raw.items()
+        if k not in {"sharepoint", "google_sheets", "label", "backup"}
     }
     # 2.1.x used SharePoint. 2.2 migrates that setting to the new primary
     # source without preserving credentials or opening a Microsoft login flow.
     if values.get("source_type") == "sharepoint":
         values["source_type"] = "google_sheets"
     try:
-        config = AppConfig(**values, google_sheets=google_sheets, label=label)
+        config = AppConfig(
+            **values, google_sheets=google_sheets, label=label, backup=backup
+        )
     except TypeError as exc:
         raise ConfigurationError(f"config.json 필드가 올바르지 않습니다: {exc}") from exc
     if config.source_type not in {"json", "google_sheets"}:
@@ -95,6 +119,10 @@ def _from_dict(raw: dict[str, Any]) -> AppConfig:
         raise ConfigurationError("라벨 가로·세로(mm)는 0보다 커야 합니다.")
     if config.label.margin_mm < 0:
         raise ConfigurationError("라벨 여백(mm)은 0 이상이어야 합니다.")
+    if config.backup.interval_minutes < 1:
+        raise ConfigurationError("백업 주기(분)는 1 이상이어야 합니다.")
+    if config.backup.keep_days < 1:
+        raise ConfigurationError("백업 보관일수는 1 이상이어야 합니다.")
     return config
 
 

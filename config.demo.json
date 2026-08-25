@@ -20,5 +20,11 @@
     "height_mm": 25.0,
     "margin_mm": 1.5,
     "auto_print": true
+  },
+  "backup": {
+    "directory": "",
+    "enabled": true,
+    "interval_minutes": 10,
+    "keep_days": 90
   }
 }

@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.2.7"
+  #define MyAppVersion "2.2.8"
 #endif
 
 #define MyAppName "BeyondPack"

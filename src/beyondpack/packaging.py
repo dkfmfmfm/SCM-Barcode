@@ -231,6 +231,7 @@ class PackagingRepository:
                        j.product_db_version, j.app_version, j.status,
                        g.box_group_id, g.box_start_no, g.box_count,
                        g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
+                       g.created_at AS box_created_at,
                        i.fnsku, i.item_code, i.sku, i.country_code, i.country_name,
                        i.product_name, i.qty_per_box, i.source_modified_at
                 FROM packaging_jobs j
@@ -240,6 +241,31 @@ class PackagingRepository:
                 ORDER BY g.box_start_no, i.id
                 """,
                 (code,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def rows_between(self, start_at: str, end_at: str) -> list[dict]:
+        """확정 시각이 구간 안에 드는 실적을 구성품 단위로 돌려준다.
+
+        `created_at`은 UTC ISO 고정 형식이라 문자열 비교로 구간을 자를 수 있다.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.shipment_code, j.job_id, j.created_at, j.operator_name,
+                       j.product_db_version, j.app_version, j.status,
+                       g.box_group_id, g.box_start_no, g.box_count,
+                       g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
+                       g.created_at AS box_created_at,
+                       i.fnsku, i.item_code, i.sku, i.country_code, i.country_name,
+                       i.product_name, i.qty_per_box, i.source_modified_at
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                JOIN box_items i ON i.box_group_id = g.box_group_id
+                WHERE g.created_at >= ? AND g.created_at < ?
+                ORDER BY g.created_at, g.box_start_no, i.id
+                """,
+                (start_at, end_at),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -363,6 +389,7 @@ class PackagingRepository:
                        j.product_db_version, j.app_version, j.status,
                        g.box_group_id, g.box_start_no,
                        g.box_count, g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
+                       g.created_at AS box_created_at,
                        i.fnsku, i.item_code, i.sku, i.country_code, i.country_name,
                        i.product_name, i.qty_per_box, i.source_modified_at
                 FROM packaging_jobs j
