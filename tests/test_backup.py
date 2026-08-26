@@ -9,13 +9,23 @@ from beyondpack.backup import (
     CSV_PREFIX,
     CSV_SUFFIX,
     DATABASE_NAME,
+    MIN_PRODUCT_COPIES,
+    PRODUCT_DIR,
+    PRODUCT_PREFIX,
+    PRODUCT_SUFFIX,
+    BackupRunner,
     PackagingBackup,
+    ProductMasterBackup,
     local_day_bounds,
     station_name,
+    version_tag,
 )
+from beyondpack.cache import ProductCacheRepository
 from beyondpack.config import BackupSettings
-from beyondpack.models import BoxGroupInput, BoxItem
+from beyondpack.models import BoxGroupInput, BoxItem, Product
 from beyondpack.packaging import PackagingRepository
+from beyondpack.sources.base import ProductBatch
+from beyondpack.sources.excel_source import ExcelProductSource
 
 
 class StationNameTests(unittest.TestCase):
@@ -153,6 +163,215 @@ class BackupTests(unittest.TestCase):
         for _ in range(3):
             self.assertTrue(self.backup.run().ok)
         self.assertEqual(list(self.target.glob(".beyondpack*")), [])
+
+
+def sheet_product(fnsku: str, version: str, country_code: str = "US") -> Product:
+    return Product(
+        fnsku=fnsku,
+        item_code="A000000120",
+        sku="BE-SKU-1",
+        country_code=country_code,
+        country_name="미국",
+        product_name="동원 양반김 12팩",
+        product_name_en="DONGWON SEAWEED 12 PACK",
+        amazon_account="BEYOND-US",
+        status="Published",
+        source_modified_at="2026-08-11T00:00:00Z",
+        data_version=version,
+        schema_version=2,
+        lookup_key=f"{fnsku}|{country_code}",
+    )
+
+
+class VersionTagTests(unittest.TestCase):
+    def test_path_hostile_characters_are_replaced(self):
+        self.assertEqual(version_tag("AUTO-1A2B"), "AUTO-1A2B")
+        self.assertEqual(version_tag("2026/08/26 v1"), "2026-08-26-v1")
+
+    def test_an_empty_version_still_produces_a_name(self):
+        self.assertEqual(version_tag(""), "NOVERSION")
+        self.assertEqual(version_tag("///"), "NOVERSION")
+
+
+class ProductMasterBackupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.share = self.root / "share"
+        self.cache = ProductCacheRepository(self.root / "data")
+        self.settings = BackupSettings(directory=str(self.share))
+        self.backup = ProductMasterBackup(self.cache, self.settings)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @property
+    def target(self) -> Path:
+        return self.share / PRODUCT_DIR
+
+    def _publish(self, version: str, *fnskus: str) -> None:
+        products = tuple(sheet_product(fnsku, version) for fnsku in fnskus)
+        self.cache.replace_snapshot(ProductBatch(products, version, 2))
+
+    def _copies(self) -> list[str]:
+        return sorted(p.name for p in self.target.glob(f"*{PRODUCT_SUFFIX}"))
+
+    def test_the_active_snapshot_is_copied_off_the_workstation(self):
+        self._publish("V1", "X003ABC123", "X004DEF456")
+        result = self.backup.run()
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(result.rows, 2)
+        copies = self._copies()
+        self.assertEqual(len(copies), 1)
+        self.assertTrue(copies[0].startswith(PRODUCT_PREFIX))
+        self.assertTrue(copies[0].endswith(f"-V1{PRODUCT_SUFFIX}"))
+
+    def test_the_copy_alone_restores_the_product_master(self):
+        # Google Sheet를 잃었을 때 이 파일 하나로 되돌릴 수 있어야 한다.
+        self._publish("V1", "X003ABC123", "X004DEF456")
+        self.backup.run()
+        path = self.target / self._copies()[0]
+        batch = ExcelProductSource(path).fetch_products()
+        self.assertEqual(batch.data_version, "V1")
+        self.assertEqual(batch.schema_version, 2)
+        restored = ProductCacheRepository(self.root / "restored")
+        self.assertEqual(restored.replace_snapshot(batch).product_count, 2)
+        found = restored.lookup("x003abc123", "us")
+        self.assertEqual(found.item_code, "A000000120")
+        self.assertEqual(found.sku, "BE-SKU-1")
+        self.assertEqual(found.product_name, "동원 양반김 12팩")
+        self.assertEqual(found.amazon_account, "BEYOND-US")
+
+    def test_unchanged_products_are_not_copied_again(self):
+        self._publish("V1", "X003ABC123")
+        first = self.backup.run()
+        path = self.target / self._copies()[0]
+        written = path.stat().st_mtime_ns
+        second = self.backup.run()
+        self.assertTrue(second.ok, second.message)
+        self.assertEqual(self._copies(), [path.name])
+        self.assertEqual(path.stat().st_mtime_ns, written)
+        self.assertIn("보관", first.message)
+        self.assertIn("유지", second.message)
+
+    def test_a_changed_sheet_is_kept_beside_the_previous_copy(self):
+        self._publish("V1", "X003ABC123")
+        self.backup.run()
+        self._publish("V2", "X003ABC123", "X004DEF456")
+        self.backup.run()
+        copies = self._copies()
+        self.assertEqual(len(copies), 2)
+        self.assertTrue(any(name.endswith(f"-V1{PRODUCT_SUFFIX}") for name in copies))
+        self.assertTrue(any(name.endswith(f"-V2{PRODUCT_SUFFIX}") for name in copies))
+
+    def test_stations_sharing_one_location_do_not_duplicate_the_master(self):
+        self._publish("V1", "X003ABC123")
+        self.backup.run()
+        ProductMasterBackup(self.cache, self.settings).run()
+        self.assertEqual(len(self._copies()), 1)
+
+    def test_a_new_pc_without_a_product_db_is_not_a_failure(self):
+        result = self.backup.run()
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("상품DB가 없어", result.message)
+        self.assertFalse(self.target.exists())
+
+    def test_backup_is_skipped_when_no_location_is_set(self):
+        self._publish("V1", "X003ABC123")
+        self.assertFalse(ProductMasterBackup(self.cache, BackupSettings()).run().ok)
+        self.assertFalse(self.share.exists())
+
+    def test_an_unreachable_share_reports_failure_without_raising(self):
+        self._publish("V1", "X003ABC123")
+        blocked = self.root / "data" / "packaging.db"
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_text("not a directory", encoding="utf-8")
+        backup = ProductMasterBackup(
+            self.cache, BackupSettings(directory=str(blocked / "안됨"))
+        )
+        result = backup.run()
+        self.assertFalse(result.ok)
+        self.assertIn("상품 마스터 백업 실패", result.message)
+
+    def test_the_last_copy_survives_even_when_the_sheet_is_never_edited(self):
+        # 보관일수만으로 지우면 시트를 오래 고치지 않은 현장의 유일한 사본이 사라진다.
+        self._publish("V1", "X003ABC123")
+        self.backup.run()
+        only = self.target / self._copies()[0]
+        stale = self.target / f"{PRODUCT_PREFIX}20200101-OLD{PRODUCT_SUFFIX}"
+        stale.write_bytes(only.read_bytes())
+        self.backup.run()
+        self.assertTrue(only.exists())
+        self.assertTrue(stale.exists())
+
+    def test_copies_beyond_the_kept_minimum_are_pruned_by_age(self):
+        self._publish("V1", "X003ABC123")
+        self.backup.run()
+        seed = (self.target / self._copies()[0]).read_bytes()
+        for index in range(MIN_PRODUCT_COPIES + 5):
+            name = f"{PRODUCT_PREFIX}2020{index // 28 + 1:02d}{index % 28 + 1:02d}-OLD{index}{PRODUCT_SUFFIX}"
+            (self.target / name).write_bytes(seed)
+        unrelated = self.target / "메모.txt"
+        unrelated.write_text("keep", encoding="utf-8")
+        self.backup.run()
+        self.assertEqual(len(self._copies()), MIN_PRODUCT_COPIES)
+        self.assertTrue(unrelated.exists())
+
+    def test_repeated_backups_leave_no_temporary_files(self):
+        self._publish("V1", "X003ABC123")
+        for _ in range(3):
+            self.assertTrue(self.backup.run().ok)
+        self.assertEqual(list(self.target.glob(".beyondpack*")), [])
+
+
+class BackupRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.share = self.root / "share"
+        self.repo = PackagingRepository(self.root / "data" / "packaging.db")
+        self.cache = ProductCacheRepository(self.root / "data")
+        self.settings = BackupSettings(directory=str(self.share))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _runner(self) -> BackupRunner:
+        return BackupRunner(self.repo, self.cache, self.settings, station="PACK-01")
+
+    def test_one_run_saves_both_the_packing_record_and_the_product_master(self):
+        job = self.repo.create_job("반장", "V1", "2.2.10", "1B")
+        self.repo.save_box_group(
+            job,
+            BoxGroupInput(
+                1,
+                Decimal("10.0"),
+                Decimal("40"),
+                Decimal("30"),
+                Decimal("25"),
+                (BoxItem("X1", "A1", "SKU1", "US", "미국", "상품1", 15),),
+            ),
+            "반장",
+        )
+        self.cache.replace_snapshot(
+            ProductBatch((sheet_product("X003ABC123", "V1"),), "V1", 2)
+        )
+        result = self._runner().run()
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(result.rows, 1)
+        self.assertTrue((self.share / "PACK-01" / DATABASE_NAME).exists())
+        self.assertEqual(len(list((self.share / PRODUCT_DIR).glob(f"*{PRODUCT_SUFFIX}"))), 1)
+
+    def test_a_failing_half_is_reported_without_losing_the_other(self):
+        self.cache.replace_snapshot(
+            ProductBatch((sheet_product("X003ABC123", "V1"),), "V1", 2)
+        )
+        runner = self._runner()
+        runner.records.settings = BackupSettings(directory="")
+        result = runner.run()
+        self.assertFalse(result.ok)
+        self.assertIn("백업 위치가 지정되지 않았습니다", result.message)
+        self.assertIn("상품 마스터 보관", result.message)
 
 
 class RowsBetweenTests(unittest.TestCase):
