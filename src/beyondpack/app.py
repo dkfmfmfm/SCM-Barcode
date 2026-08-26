@@ -3,17 +3,22 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
+import time
 from importlib import resources
 from pathlib import Path
 from typing import Callable
 
 from .cache import ProductCacheRepository
-from .config import AppConfig, load_config
+from .config import AppConfig, default_app_dir, load_config
 from .errors import ConfigurationError
 from .packaging import PackagingRepository
 from .sources.base import ProductSource
 from .sources.json_source import JsonProductSource
 from .sources.google_sheets import GoogleSheetsProductSource
+
+
+# 자체검사 단계의 경과 시간 기준점. 배포본은 onefile 압축 해제부터 오래 걸린다.
+_STARTED_AT = time.monotonic()
 
 
 def build_source_factory(
@@ -42,6 +47,27 @@ def build_source_factory(
     return factory
 
 
+def _self_test_note(message: str) -> None:
+    """자체검사 단계를 시작 로그에 남긴다.
+
+    배포본은 콘솔이 없어 검사가 멈추면 아무 것도 남지 않는다. 단계마다 찍어
+    두면 어디서 멈췄는지 빌드 로그만 보고 알 수 있다. 소요 시간도 함께 남겨
+    한 단계가 무거워지는 것을 시간 초과 전에 알아차릴 수 있게 한다.
+    """
+    import time
+    from datetime import datetime
+
+    elapsed = time.monotonic() - _STARTED_AT
+    path = default_app_dir() / "logs" / "startup.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(f"[{stamp}] SELF-TEST +{elapsed:6.1f}s {message}\n")
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="BeyondPack barcode packing workstation")
     parser.add_argument("--config", type=Path, help="config.json 경로")
@@ -66,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("BEYOND EARTH Co.,Ltd.")
 
     if args.self_test:
+        _self_test_note("BEGIN")
         with tempfile.TemporaryDirectory(
             prefix="beyondpack-self-test-", ignore_cleanup_errors=True
         ) as temp_dir:
@@ -113,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                 window.close()
                 app.quit()
 
+            _self_test_note("GUI 시작")
             QTimer.singleShot(250, finish_self_test)
             QTimer.singleShot(5000, app.quit)
             app.exec()
@@ -121,8 +149,12 @@ def main(argv: list[str] | None = None) -> int:
                     "GUI 창 또는 수량 증감 버튼 검사에 실패했습니다: "
                     f"visible={result['visible']}, steppers={result['steppers']}"
                 )
+            _self_test_note("GUI 통과")
             _self_test_labels(root / "labels.pdf")
+            _self_test_note("라벨 통과")
             _self_test_backup(root, cache, packaging, sample_path)
+            _self_test_note("백업 통과")
+        _self_test_note("END")
         return 0
 
     config, config_path = load_config(args.config)
@@ -229,9 +261,11 @@ def _self_test_backup(
 
     expected = cache.replace_snapshot(JsonProductSource(sample_path).fetch_products())
     share = root / "share"
+    _self_test_note("백업 시작")
     result = BackupRunner(
         packaging, cache, BackupSettings(directory=str(share)), station="SELF-TEST"
     ).run()
+    _self_test_note(f"백업 실행: {result.message}")
     if not result.ok:
         raise RuntimeError(f"백업 검사 실패: {result.message}")
     if not (share / "SELF-TEST" / DATABASE_NAME).exists():
@@ -243,6 +277,7 @@ def _self_test_backup(
         )
     restored = ProductCacheRepository(root / "restored")
     info = restored.replace_snapshot(ExcelProductSource(copies[0]).fetch_products())
+    _self_test_note(f"사본 복구: {info.product_count}개")
     if info.product_count != expected.product_count:
         raise RuntimeError(
             f"백업 검사 실패: 사본으로 복구한 상품이 {info.product_count}개입니다 "

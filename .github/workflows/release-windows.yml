@@ -85,23 +85,29 @@ jobs:
       - name: GUI startup self-test
         shell: pwsh
         run: |
+          # onefile은 압축 해제부터 수 초가 걸리고, 자체검사가 라벨 인쇄와
+          # 상품 마스터 백업·복구까지 돌면서 Qt와 openpyxl 모듈 트리를 모두
+          # 차갑게 읽어 들인다. 이 예산은 실제 소요가 아니라 멈춤을 잡기 위한
+          # 상한이다. 단계별 소요는 아래 startup.log로 확인한다.
+          $timeoutSeconds = 120
           $process = Start-Process `
             -FilePath ".\dist\onefile\BeyondPack.exe" `
             -ArgumentList "--self-test" `
             -PassThru
-          if (-not $process.WaitForExit(30000)) {
+          $timedOut = -not $process.WaitForExit($timeoutSeconds * 1000)
+          if ($timedOut) {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-            $logPath = Join-Path $env:LOCALAPPDATA "BeyondPack\logs\startup.log"
-            if (Test-Path -LiteralPath $logPath) {
-              Get-Content -LiteralPath $logPath | Write-Host
-            }
-            throw "Executable GUI startup self-test timed out after 30 seconds."
+          }
+          $logPath = Join-Path $env:LOCALAPPDATA "BeyondPack\logs\startup.log"
+          if (Test-Path -LiteralPath $logPath) {
+            Write-Host "--- startup.log ---"
+            Get-Content -LiteralPath $logPath | Write-Host
+            Write-Host "--- end startup.log ---"
+          }
+          if ($timedOut) {
+            throw "Executable GUI startup self-test timed out after $timeoutSeconds seconds. The last SELF-TEST line above names the stage that hung."
           }
           if ($process.ExitCode -ne 0) {
-            $logPath = Join-Path $env:LOCALAPPDATA "BeyondPack\logs\startup.log"
-            if (Test-Path -LiteralPath $logPath) {
-              Get-Content -LiteralPath $logPath | Write-Host
-            }
             throw "Executable GUI startup self-test failed. Exit=$($process.ExitCode)"
           }
 
