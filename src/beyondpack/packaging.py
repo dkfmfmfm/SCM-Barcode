@@ -206,6 +206,7 @@ class PackagingRepository:
                        j.operator_name,
                        COUNT(i.id) AS item_count,
                        COALESCE(SUM(i.qty_per_box), 0) AS total_qty,
+                       MIN(i.fnsku) AS first_fnsku,
                        MIN(i.item_code) AS first_item_code,
                        MIN(i.product_name) AS first_product_name
                 FROM box_groups g
@@ -241,6 +242,120 @@ class PackagingRepository:
                 ORDER BY g.box_start_no, i.id
                 """,
                 (code,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def is_last_box_group(self, box_group_id: str) -> bool:
+        """이 박스 묶음이 해당 출고건의 마지막인지 확인한다."""
+        with self._connect() as conn:
+            return self._last_box_group_id(conn, box_group_id) == box_group_id
+
+    @staticmethod
+    def _last_box_group_id(conn: sqlite3.Connection, box_group_id: str = "") -> str:
+        """같은 출고건에서 박스번호가 가장 큰 묶음의 id.
+
+        `box_group_id`를 주면 그 묶음이 속한 출고건에서 찾는다.
+        """
+        if box_group_id:
+            shipment = conn.execute(
+                """
+                SELECT j.shipment_code
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                WHERE g.box_group_id = ?
+                """,
+                (box_group_id,),
+            ).fetchone()
+            if shipment is None:
+                return ""
+            code = str(shipment["shipment_code"])
+        else:
+            return ""
+        row = conn.execute(
+            """
+            SELECT g.box_group_id
+            FROM box_groups g
+            JOIN packaging_jobs j ON j.job_id = g.job_id
+            WHERE j.shipment_code = ?
+            ORDER BY g.box_start_no DESC, g.created_at DESC
+            LIMIT 1
+            """,
+            (code,),
+        ).fetchone()
+        return str(row["box_group_id"]) if row else ""
+
+    def take_back_box_group(
+        self, box_group_id: str, operator_name: str, reason: str, action: str = "DELETE"
+    ) -> tuple[dict, list[dict]]:
+        """확정한 박스 묶음을 되돌린다. 지운 내용을 함께 돌려준다.
+
+        출고건의 **마지막 묶음만** 되돌릴 수 있다. 중간 묶음을 지우면 이미
+        출력된 라벨의 박스번호와 이후 번호가 어긋나 실물과 기록을 맞출 수
+        없게 된다. 되돌린 뒤에는 그 번호부터 다시 발번된다.
+        """
+        cleaned = reason.strip()
+        if not cleaned:
+            raise PackagingValidationError("수정·삭제 사유를 입력하세요.")
+        with self._connect() as conn:
+            group = conn.execute(
+                """
+                SELECT g.*, j.shipment_code
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                WHERE g.box_group_id = ?
+                """,
+                (box_group_id,),
+            ).fetchone()
+            if group is None:
+                raise PackagingValidationError("해당 박스를 찾을 수 없습니다.")
+            if self._last_box_group_id(conn, box_group_id) != box_group_id:
+                raise PackagingValidationError(
+                    "출고건의 마지막 박스만 수정·삭제할 수 있습니다. "
+                    "중간 박스를 지우면 이후 박스번호가 어긋납니다."
+                )
+            items = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM box_items WHERE box_group_id = ? ORDER BY id",
+                    (box_group_id,),
+                ).fetchall()
+            ]
+            saved = dict(group)
+            conn.execute("DELETE FROM box_items WHERE box_group_id = ?", (box_group_id,))
+            conn.execute("DELETE FROM box_groups WHERE box_group_id = ?", (box_group_id,))
+            conn.execute(
+                "UPDATE packaging_jobs SET updated_at = ? WHERE job_id = ?",
+                (utc_now_iso(), saved["job_id"]),
+            )
+            self._audit(
+                conn,
+                operator_name,
+                action,
+                "BOX_GROUP",
+                box_group_id,
+                reason=cleaned,
+                details={
+                    "shipment_code": saved["shipment_code"],
+                    "box_start_no": saved["box_start_no"],
+                    "box_count": saved["box_count"],
+                    "weight_kg": saved["weight_kg"],
+                    "items": items,
+                },
+            )
+        return saved, items
+
+    def audit_events(self, limit: int = 200) -> list[dict]:
+        """감사 기록을 최근 순으로 돌려준다. 수정·삭제 이력 확인용."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT occurred_at, operator_name, action, entity_type,
+                       entity_id, reason, details_json
+                FROM audit_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
             ).fetchall()
         return [dict(row) for row in rows]
 

@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+from beyondpack.errors import PackagingValidationError
 from beyondpack.models import BoxGroupInput, BoxItem
 from beyondpack.packaging import PackagingRepository
 
@@ -143,6 +144,82 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(group["shipment_code"], "1B")
         self.assertEqual(len(items), 1)
         self.assertIsNone(self.repo.box_group("없는-아이디"))
+
+    def test_shipment_progress_carries_the_fnsku(self):
+        job = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        self.repo.save_box_group(job, self._group(), "반장")
+        group = self.repo.shipment_groups("1B")[0]
+        self.assertEqual(group["first_fnsku"], "X1")
+
+    def test_taking_back_the_last_box_group_frees_its_numbers(self):
+        job = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        self.repo.save_box_group(job, self._group(3), "반장")
+        second = self.repo.save_box_group(job, self._group(2), "반장")
+        self.assertEqual(self.repo.next_box_number("1B"), 6)
+        group, items = self.repo.take_back_box_group(
+            second.box_group_id, "반장", "무게 오입력"
+        )
+        self.assertEqual(int(group["box_start_no"]), 4)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(self.repo.next_box_number("1B"), 4)
+        self.assertEqual(len(self.repo.shipment_groups("1B")), 1)
+        # 되돌린 번호는 다시 확정할 때 그대로 쓰인다.
+        again = self.repo.save_box_group(job, self._group(2), "반장")
+        self.assertEqual((again.box_start_no, again.box_end_no), (4, 5))
+
+    def test_a_middle_box_group_cannot_be_taken_back(self):
+        job = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        first = self.repo.save_box_group(job, self._group(3), "반장")
+        self.repo.save_box_group(job, self._group(2), "반장")
+        with self.assertRaises(PackagingValidationError):
+            self.repo.take_back_box_group(first.box_group_id, "반장", "오입력")
+        self.assertEqual(len(self.repo.shipment_groups("1B")), 2)
+
+    def test_the_last_box_group_of_another_shipment_is_still_the_last(self):
+        first = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        kept = self.repo.save_box_group(first, self._group(2), "반장")
+        other = self.repo.create_job("반장", "V1", "2.2.9", "2B")
+        self.repo.save_box_group(other, self._group(1), "반장")
+        # 다른 출고건에 더 최근 박스가 있어도 1B의 마지막은 되돌릴 수 있다.
+        self.repo.take_back_box_group(kept.box_group_id, "반장", "재포장")
+        self.assertEqual(self.repo.shipment_groups("1B"), [])
+        self.assertEqual(len(self.repo.shipment_groups("2B")), 1)
+
+    def test_taking_back_across_jobs_of_one_shipment(self):
+        first = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        self.repo.save_box_group(first, self._group(3), "반장")
+        # 익일 재개: 새 작업이지만 같은 출고건이다.
+        second = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        latest = self.repo.save_box_group(second, self._group(2), "반장")
+        self.assertTrue(self.repo.is_last_box_group(latest.box_group_id))
+        self.repo.take_back_box_group(latest.box_group_id, "반장", "오입력")
+        self.assertEqual(self.repo.next_box_number("1B"), 4)
+
+    def test_a_reason_is_required_and_recorded(self):
+        job = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        saved = self.repo.save_box_group(job, self._group(), "반장")
+        with self.assertRaises(PackagingValidationError):
+            self.repo.take_back_box_group(saved.box_group_id, "반장", "   ")
+        self.repo.take_back_box_group(saved.box_group_id, "반장", "파손으로 재포장", "AMEND")
+        recorded = [
+            event
+            for event in self.repo.audit_events()
+            if event["entity_type"] == "BOX_GROUP" and event["action"] == "AMEND"
+        ]
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["reason"], "파손으로 재포장")
+        self.assertIn("X1", recorded[0]["details_json"])
+
+    def test_taking_back_removes_the_items_too(self):
+        job = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+        saved = self.repo.save_box_group(job, self._group(), "반장")
+        self.repo.take_back_box_group(saved.box_group_id, "반장", "오입력")
+        self.assertEqual(self.repo.shipment_rows("1B"), [])
+        self.assertIsNone(self.repo.box_group(saved.box_group_id))
+
+    def test_an_unknown_box_group_cannot_be_taken_back(self):
+        with self.assertRaises(PackagingValidationError):
+            self.repo.take_back_box_group("없는-아이디", "반장", "오입력")
 
     def test_existing_database_without_shipment_column_is_migrated(self):
         path = Path(self.temp.name) / "legacy.db"
