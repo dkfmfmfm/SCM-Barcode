@@ -1,4 +1,4 @@
-# BeyondPack 2.2.10
+# BeyondPack 2.2.11
 
 `PLAN.MD`와 `RESEARCH.MD`를 기준으로 구현한 Windows 포장 작업 프로그램이다. 평상시 Google Sheet를 CSV로 자동 다운로드하고, 검증에 성공한 상품만 로컬 SQLite에 저장한다. 실제 스캔 조회는 네트워크가 아니라 `FNSKU+CountryCode` 로컬 인덱스를 사용한다.
 

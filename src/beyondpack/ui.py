@@ -1129,6 +1129,45 @@ class MainWindow(QMainWindow):
         self._success("구성품에 추가했습니다. 다음 FNSKU를 스캔하거나 포장정보를 입력하세요.")
         self._save_draft()
 
+    # 인쇄 뒤 포커스를 되찾을 때까지 기다리는 시각(ms). 0은 이번 이벤트 처리
+    # 직후, 뒤의 값은 프린터 드라이버 창이나 스풀러 알림이 늦게 떴다 사라진
+    # 경우를 위한 것이다.
+    FOCUS_RETRY_MS = (0, 300)
+
+    def _focus_scan_input(self) -> None:
+        """다음 박스를 바로 스캔할 수 있게 FNSKU 입력칸으로 커서를 돌려놓는다.
+
+        `setFocus()` 한 번으로는 부족하다. 라벨을 인쇄하면 프린터 드라이버 창과
+        스풀러 알림이 잠깐 앞으로 나왔다 사라지면서 포커스를 가져가는데, 그게
+        이 함수가 끝난 뒤에 일어난다. 그래서 잠시 뒤에 다시 확인한다.
+
+        다만 되돌리기 전에 지금 어디에 커서가 있는지 본다. 작업자가 스스로
+        박스수량이나 무게 칸으로 옮겼다면 뺏지 않는다.
+        """
+        entries = (
+            self.fnsku_input,
+            self.qty_input,
+            self.box_count,
+            self.weight,
+            self.length,
+            self.width,
+            self.height,
+            self.shipment_input,
+            self.operator_input,
+        )
+
+        def restore(force: bool) -> None:
+            if not force and any(QApplication.focusWidget() is w for w in entries):
+                return
+            self.fnsku_input.setFocus(Qt.OtherFocusReason)
+            self.fnsku_input.selectAll()
+
+        restore(True)
+        for delay in self.FOCUS_RETRY_MS:
+            # 창을 문맥으로 넘겨 둔다. 인쇄 직후 프로그램을 닫으면 예약된
+            # 호출이 이미 사라진 위젯을 건드리게 되는데, 이러면 취소된다.
+            QTimer.singleShot(delay, self, lambda: restore(False))
+
     def remove_selected_item(self) -> None:
         row = self.items_table.currentRow()
         if row < 0:
@@ -1402,6 +1441,8 @@ class MainWindow(QMainWindow):
         )
         if message:
             self._success("재출력 " + message)
+        # 재출력은 현황 표의 행을 고르고 누르므로 커서가 표에 가 있다.
+        self._focus_scan_input()
 
     def _refresh_next_box_label(self) -> None:
         code = self._shipment_code()
@@ -1477,7 +1518,7 @@ class MainWindow(QMainWindow):
             f"박스 #{saved.box_start_no}~#{saved.box_end_no} 저장 완료. "
             + (printed if printed else "F8로 라벨을 출력하거나 다음 작업을 스캔하세요.")
         )
-        self.fnsku_input.setFocus()
+        self._focus_scan_input()
 
     @Slot()
     def reset_current(self) -> None:
@@ -1550,6 +1591,7 @@ class MainWindow(QMainWindow):
         )
         if message:
             self._success(message)
+        self._focus_scan_input()
 
     @Slot()
     def configure_labels(self) -> None:
@@ -1618,6 +1660,7 @@ class MainWindow(QMainWindow):
         )
         if message:
             self._success("테스트 " + message)
+        self._focus_scan_input()
 
     @Slot()
     def export_current_job(self) -> None:
