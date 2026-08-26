@@ -37,10 +37,14 @@ def _item_rows(items: list[dict]) -> str:
 
 
 def _summary(group: dict, items: list[dict]) -> str:
-    """소형 라벨용 한 줄 요약. 단품이면 품목코드와 수량, 합포면 품목 수를 쓴다."""
+    """소형 라벨용 한 줄 요약.
+
+    단품이면 FNSKU와 수량, 합포면 품목 수를 쓴다. 작업자가 스캔하는 값이
+    FNSKU이므로 라벨에도 같은 값을 실어야 박스와 실물을 바로 대조할 수 있다.
+    """
     if len(items) == 1:
         item = items[0]
-        head = f"{item['item_code']} · {int(item['qty_per_box'])}EA"
+        head = f"{item['fnsku']} · {int(item['qty_per_box'])}EA"
     else:
         total = sum(int(item["qty_per_box"]) for item in items)
         head = f"합포 {len(items)}품목 · {total}EA"
