@@ -543,7 +543,7 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.progress_summary)
         self.progress_table = QTableWidget(0, 6)
         self.progress_table.setHorizontalHeaderLabels(
-            ["박스번호", "구성품", "EA/BOX", "무게", "규격(가로×세로×높이)", "확정시각"]
+            ["박스번호", "FNSKU", "EA/BOX", "무게", "규격(가로×세로×높이)", "확정시각"]
         )
         self.progress_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.progress_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -557,10 +557,25 @@ class MainWindow(QMainWindow):
         progress_header.setSectionResizeMode(1, QHeaderView.Stretch)
         self.progress_table.itemSelectionChanged.connect(self._progress_selection_changed)
         progress_layout.addWidget(self.progress_table)
+        action_row = QHBoxLayout()
+        action_row.addStretch()
         self.reprint_selected_button = QPushButton("선택 박스 라벨 재출력")
         self.reprint_selected_button.setEnabled(False)
         self.reprint_selected_button.clicked.connect(self.print_selected_group)
-        progress_layout.addWidget(self.reprint_selected_button, alignment=Qt.AlignRight)
+        self.amend_selected_button = QPushButton("선택 박스 수정")
+        self.amend_selected_button.setEnabled(False)
+        self.amend_selected_button.clicked.connect(self.amend_selected_group)
+        self.delete_selected_button = QPushButton("선택 박스 삭제")
+        self.delete_selected_button.setObjectName("dangerButton")
+        self.delete_selected_button.setEnabled(False)
+        self.delete_selected_button.clicked.connect(self.delete_selected_group)
+        for button in (
+            self.reprint_selected_button,
+            self.amend_selected_button,
+            self.delete_selected_button,
+        ):
+            action_row.addWidget(button)
+        progress_layout.addLayout(action_row)
         self.work_tabs.addTab(progress_page, "4. 출고건 작업 현황")
         left.addWidget(self.work_tabs, 1)
 
@@ -1181,7 +1196,7 @@ class MainWindow(QMainWindow):
             total_boxes += count
             total_weight += weight * count
             if int(group["item_count"] or 0) == 1:
-                contents = str(group["first_item_code"] or group["first_product_name"] or "-")
+                contents = str(group["first_fnsku"] or group["first_product_name"] or "-")
             else:
                 contents = f"합포 {int(group['item_count'] or 0)}품목"
             values = [
@@ -1221,7 +1236,141 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _progress_selection_changed(self) -> None:
-        self.reprint_selected_button.setEnabled(self.progress_table.currentRow() >= 0)
+        row = self.progress_table.currentRow()
+        selected = row >= 0
+        # 마지막 박스만 되돌릴 수 있다. 중간 박스를 지우면 이미 붙인 라벨의
+        # 번호와 이후 번호가 어긋나 실물과 기록을 맞출 수 없다.
+        is_last = selected and row == self.progress_table.rowCount() - 1
+        self.reprint_selected_button.setEnabled(selected)
+        for button in (self.amend_selected_button, self.delete_selected_button):
+            button.setEnabled(is_last)
+            button.setToolTip(
+                ""
+                if is_last
+                else "출고건의 마지막 박스만 수정·삭제할 수 있습니다. "
+                "중간 박스를 지우면 이후 박스번호가 어긋납니다."
+            )
+
+    def _selected_box_group_id(self) -> str:
+        row = self.progress_table.currentRow()
+        cell = self.progress_table.item(row, 0) if row >= 0 else None
+        return str(cell.data(Qt.UserRole)) if cell else ""
+
+    def _take_back_reason(self, title: str, group: dict) -> str:
+        """되돌리는 이유를 받는다. 감사 기록에 남으므로 비워 둘 수 없다."""
+        start = int(group["box_start_no"])
+        count = int(group["box_count"])
+        span = f"#{start}" if count == 1 else f"#{start}~#{start + count - 1}"
+        reason, accepted = QInputDialog.getText(
+            self,
+            title,
+            f"{span} 박스 {count}개를 되돌립니다.\n"
+            "이미 출력한 라벨은 폐기하세요.\n\n사유를 입력하세요(기록에 남습니다):",
+        )
+        return reason.strip() if accepted else ""
+
+    def _guard_pending_input(self) -> bool:
+        if self.items:
+            self._error(
+                "작성 중인 박스 구성품이 있습니다. 확정하거나 F4로 초기화한 뒤 진행하세요. [BP-PACK-002]"
+            )
+            return False
+        return True
+
+    @Slot()
+    def delete_selected_group(self) -> None:
+        box_group_id = self._selected_box_group_id()
+        saved = self.packaging.box_group(box_group_id) if box_group_id else None
+        if not saved:
+            self._error("삭제할 박스 행을 선택하세요. [BP-PACK-002]", beep=False)
+            return
+        group, _items = saved
+        reason = self._take_back_reason("선택 박스 삭제", group)
+        if not reason:
+            return
+        self._take_back(box_group_id, reason, "DELETE")
+
+    @Slot()
+    def amend_selected_group(self) -> None:
+        """확정한 박스를 되돌려 입력칸으로 되살린다.
+
+        수정은 되돌린 뒤 다시 확정하는 방식이다. 같은 검증을 그대로 거치고,
+        마지막 박스만 되돌리므로 다시 확정하면 같은 박스번호가 붙는다.
+        """
+        if not self._guard_pending_input():
+            return
+        box_group_id = self._selected_box_group_id()
+        saved = self.packaging.box_group(box_group_id) if box_group_id else None
+        if not saved:
+            self._error("수정할 박스 행을 선택하세요. [BP-PACK-002]", beep=False)
+            return
+        group, _items = saved
+        reason = self._take_back_reason("선택 박스 수정", group)
+        if not reason:
+            return
+        restored = self._take_back(box_group_id, reason, "AMEND")
+        if restored is None:
+            return
+        group, items = restored
+        self.items = [
+            BoxItem(
+                fnsku=str(item["fnsku"]),
+                item_code=str(item["item_code"]),
+                sku=str(item["sku"]),
+                country_code=str(item["country_code"]),
+                country_name=str(item["country_name"]),
+                product_name=str(item["product_name"]),
+                qty_per_box=int(item["qty_per_box"]),
+                source_modified_at=str(item.get("source_modified_at") or ""),
+            )
+            for item in items
+        ]
+        if self.items:
+            self._select_country(self.items[0].country_code)
+        self._refresh_items_table()
+        self.box_count.setValue(int(group["box_count"]))
+        for widget, key in (
+            (self.weight, "weight_kg"),
+            (self.length, "length_cm"),
+            (self.width, "width_cm"),
+            (self.height, "height_cm"),
+        ):
+            widget.setValue(float(self._decimal_text(group[key])))
+        self.work_tabs.setCurrentIndex(0)
+        self._save_draft()
+        self._success(
+            f"박스 #{int(group['box_start_no'])} 내용을 입력칸으로 되돌렸습니다. "
+            "고친 뒤 Ctrl+Enter로 다시 확정하세요. 이미 출력한 라벨은 폐기하세요."
+        )
+
+    def _take_back(
+        self, box_group_id: str, reason: str, action: str
+    ) -> tuple[dict, list[dict]] | None:
+        operator_name = self.operator_input.text().strip()
+        if not operator_name:
+            self._error("작업자 이름 또는 사번을 입력하세요. [BP-PACK-001]")
+            return None
+        try:
+            group, items = self.packaging.take_back_box_group(
+                box_group_id, operator_name, reason, action
+            )
+        except BeyondPackError as exc:
+            self._error(f"{exc} [{exc.code}]")
+            return None
+        # 되돌린 박스가 F8 대상이면 대상을 다시 잡는다.
+        self.last_saved = self.packaging.last_group(self.job_id) if self.job_id else None
+        self._refresh_next_box_label()
+        self._refresh_shipment_view()
+        self.backup_after_confirm.start()
+        if action == "DELETE":
+            start = int(group["box_start_no"])
+            count = int(group["box_count"])
+            span = f"#{start}" if count == 1 else f"#{start}~#{start + count - 1}"
+            self._success(
+                f"박스 {span}를 삭제했습니다. 다음 박스는 #{start}입니다. "
+                "이미 출력한 라벨은 폐기하세요."
+            )
+        return group, items
 
     @Slot()
     def print_selected_group(self) -> None:
@@ -1582,6 +1731,7 @@ class MainWindow(QMainWindow):
         QPushButton:hover { background: #F1EEE8; }
         QPushButton#primaryButton { background: #0B1F3A; color: white; border: 0; }
         QPushButton#confirmButton { background: #2563EB; color: white; border: 0; font-size: 17px; }
+        QPushButton#dangerButton { color: #B91C1C; border-color: #E6A2A2; }
         QPushButton:disabled { background: #E5E7EB; color: #9CA3AF; }
         QTableWidget { background: white; border: 1px solid #DDD8CE; gridline-color: #E8E3DA; alternate-background-color: #FAF8F4; }
         QHeaderView::section { background: #0B1F3A; color: white; padding: 8px; border: 0; font-weight: 700; }

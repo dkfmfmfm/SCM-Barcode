@@ -33,6 +33,18 @@ class LabelTests(unittest.TestCase):
         self.assertIn("<td>DE</td>", label)
         self.assertNotIn("DE (DE)", label)
 
+    def test_compact_label_carries_the_scanned_fnsku(self):
+        # 작업자가 스캔하는 값이 FNSKU이므로 라벨에도 같은 값이 실려야 한다.
+        label = render_group_label(GROUP, [item("X003ABC123")], 1, 8, compact=True)
+        self.assertIn("X003ABC123", label)
+        self.assertNotIn("A1", label)
+
+    def test_compact_label_summarizes_a_mixed_box(self):
+        items = [item("X1"), item("X2")]
+        label = render_group_label(GROUP, items, 1, 8, compact=True)
+        self.assertIn("합포 2품목", label)
+        self.assertIn("4EA", label)
+
     def test_box_number_is_printed_with_hash_and_sequence(self):
         label = render_group_label(GROUP, [item()], 3, 8)
         self.assertIn("#3", label)
