@@ -518,15 +518,17 @@ class MainWindow(QMainWindow):
         items_page = QWidget()
         items_layout = QVBoxLayout(items_page)
         items_layout.setContentsMargins(0, 10, 0, 0)
-        self.items_table = QTableWidget(0, 6)
-        self.items_table.setHorizontalHeaderLabels(["FNSKU", "품목코드", "SKU", "국가", "품목명", "EA/BOX"])
+        self.items_table = QTableWidget(0, 5)
+        self.items_table.setHorizontalHeaderLabels(
+            ["품목코드", "FNSKU", "국가", "품목명", "EA/BOX"]
+        )
         self.items_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.items_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.items_table.verticalHeader().setVisible(False)
         header_view = self.items_table.horizontalHeader()
-        for col in range(6):
+        for col in range(5):
             header_view.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        header_view.setSectionResizeMode(4, QHeaderView.Stretch)
+        header_view.setSectionResizeMode(3, QHeaderView.Stretch)
         self.items_table.setMinimumHeight(84)
         items_layout.addWidget(self.items_table)
         remove_button = QPushButton("선택 상품 제거")
@@ -1138,7 +1140,13 @@ class MainWindow(QMainWindow):
         )
         self.items_table.setRowCount(len(self.items))
         for row, item in enumerate(self.items):
-            values = [item.fnsku, item.item_code, item.sku, item.country_name, item.product_name, str(item.qty_per_box)]
+            values = [
+                item.item_code,
+                item.fnsku,
+                item.country_name,
+                item.product_name,
+                str(item.qty_per_box),
+            ]
             for column, value in enumerate(values):
                 self.items_table.setItem(row, column, QTableWidgetItem(value))
 
