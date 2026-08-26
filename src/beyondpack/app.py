@@ -122,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"visible={result['visible']}, steppers={result['steppers']}"
                 )
             _self_test_labels(root / "labels.pdf")
+            _self_test_backup(root, cache, packaging, sample_path)
         return 0
 
     config, config_path = load_config(args.config)
@@ -209,6 +210,44 @@ def _self_test_labels(output: Path) -> None:
                 f"라벨 용지 검사 실패: {actual[0]:.0f}x{actual[1]:.0f}mm "
                 f"(기대 {expected[0]:.0f}x{expected[1]:.0f}mm)"
             )
+
+
+def _self_test_backup(
+    root: Path,
+    cache: ProductCacheRepository,
+    packaging: PackagingRepository,
+    sample_path: Path,
+) -> None:
+    """백업이 실제로 두 사본을 남기는지, 상품 사본만으로 되돌릴 수 있는지 검사한다.
+
+    상품 마스터 사본은 Excel 파일이라 배포본에 Excel 구성요소가 빠지면 조용히
+    실패한다. 설치본을 만들 때마다 이 경로를 끝까지 통과시킨다.
+    """
+    from .backup import DATABASE_NAME, PRODUCT_DIR, PRODUCT_SUFFIX, BackupRunner
+    from .config import BackupSettings
+    from .sources.excel_source import ExcelProductSource
+
+    expected = cache.replace_snapshot(JsonProductSource(sample_path).fetch_products())
+    share = root / "share"
+    result = BackupRunner(
+        packaging, cache, BackupSettings(directory=str(share)), station="SELF-TEST"
+    ).run()
+    if not result.ok:
+        raise RuntimeError(f"백업 검사 실패: {result.message}")
+    if not (share / "SELF-TEST" / DATABASE_NAME).exists():
+        raise RuntimeError("백업 검사 실패: 포장기록 사본이 없습니다.")
+    copies = sorted((share / PRODUCT_DIR).glob(f"*{PRODUCT_SUFFIX}"))
+    if len(copies) != 1:
+        raise RuntimeError(
+            f"백업 검사 실패: 상품 마스터 사본이 {len(copies)}개 생성되었습니다."
+        )
+    restored = ProductCacheRepository(root / "restored")
+    info = restored.replace_snapshot(ExcelProductSource(copies[0]).fetch_products())
+    if info.product_count != expected.product_count:
+        raise RuntimeError(
+            f"백업 검사 실패: 사본으로 복구한 상품이 {info.product_count}개입니다 "
+            f"(기대 {expected.product_count}개)."
+        )
 
 
 if __name__ == "__main__":

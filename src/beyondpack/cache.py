@@ -235,6 +235,28 @@ class ProductCacheRepository:
             raise InactiveProductError("사용중지된 상품입니다. 포장할 수 없습니다.")
         return product
 
+    def export_snapshot(self) -> tuple[CacheInfo, tuple[Product, ...]]:
+        """지금 쓰고 있는 스냅샷의 요약과 상품 전체를 돌려준다.
+
+        상품 원본은 Google Sheet 한 곳뿐이라 시트를 잃으면 되돌릴 수단이 없다.
+        검증을 통과해 실제로 사용 중인 이 스냅샷이 원본의 마지막 사본이므로,
+        백업이 그대로 파일로 남길 수 있게 열어 준다.
+        """
+        with self._io_lock:
+            db_path = self._active_db_path()
+            if not db_path.exists():
+                return CacheInfo(0, "", 0, ""), ()
+            with self._connect(db_path, read_only=True) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT fnsku, item_code, sku, country_code, country_name,
+                           product_name, product_name_en, amazon_account, status,
+                           source_modified_at, data_version, schema_version, lookup_key
+                    FROM products ORDER BY lookup_key
+                    """
+                ).fetchall()
+            return self._info_from_path(db_path), tuple(Product(*row) for row in rows)
+
     def info(self) -> CacheInfo:
         with self._io_lock:
             db_path = self._active_db_path()

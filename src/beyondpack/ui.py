@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .backup import BackupResult, PackagingBackup, station_name
+from .backup import BackupResult, BackupRunner, station_name
 from .cache import ProductCacheRepository
 from .config import AppConfig, BackupSettings, LabelSettings, save_config
 from .diagnostics import create_diagnostic_bundle
@@ -111,7 +111,7 @@ class BackupWorker(QObject):
 
     finished = Signal(object)
 
-    def __init__(self, backup: PackagingBackup):
+    def __init__(self, backup: BackupRunner):
         super().__init__()
         self.backup = backup
 
@@ -132,7 +132,7 @@ class BackupSettingsDialog(QDialog):
         self.setWindowTitle("자동 백업 설정")
         self.setMinimumWidth(520)
 
-        self.enabled = QCheckBox("포장 실적을 지정한 위치에 자동으로 복사한다")
+        self.enabled = QCheckBox("포장 실적과 상품 마스터를 지정한 위치에 자동으로 복사한다")
         self.enabled.setChecked(settings.enabled)
 
         self.directory_input = QLineEdit(settings.directory)
@@ -152,7 +152,7 @@ class BackupSettingsDialog(QDialog):
 
         self.keep_input = QSpinBox()
         self.keep_input.setRange(1, 3650)
-        self.keep_input.setSuffix(" 일 보관")
+        self.keep_input.setSuffix(" 일 보관 (일자별 CSV·상품 마스터)")
         self.keep_input.setMinimumHeight(36)
         self.keep_input.setValue(settings.keep_days)
 
@@ -160,13 +160,18 @@ class BackupSettingsDialog(QDialog):
         form.addRow("", self.enabled)
         form.addRow("백업 위치", directory_row)
         form.addRow("백업 주기", self.interval_input)
-        form.addRow("CSV 보관", self.keep_input)
+        form.addRow("사본 보관", self.keep_input)
 
         guide = QLabel(
             f"이 PC의 실적은 <b>{html.escape(station)}</b> 하위 폴더에 저장되므로 여러 작업대가 "
             "같은 위치를 써도 서로 덮어쓰지 않습니다.<br>"
-            "· <b>packaging.db</b> — 포장기록 전체 사본. PC 교체·고장 시 이 파일로 복구합니다.<br>"
-            "· <b>packing-YYYYMMDD.csv</b> — 그날 확정한 박스 실적. Excel로 바로 열립니다.<br>"
+            f"· <b>{html.escape(station)}\\packaging.db</b> — 포장기록 전체 사본. "
+            "PC 교체·고장 시 이 파일로 복구합니다.<br>"
+            f"· <b>{html.escape(station)}\\packing-YYYYMMDD.csv</b> — 그날 확정한 박스 실적. "
+            "Excel로 바로 열립니다.<br>"
+            "· <b>products\\products-날짜-버전.xlsx</b> — 상품 마스터 사본. Google Sheet를 "
+            "잃어도 <b>Excel 비상 업데이트</b>로 이 파일을 그대로 되돌릴 수 있습니다. "
+            "상품 내용이 바뀔 때만 새로 쌓이며, 작업대별로 나뉘지 않습니다.<br>"
             "백업은 박스 확정 후와 설정한 주기마다, 프로그램 종료 시 자동으로 실행됩니다. "
             "공유 폴더가 끊겨 있어도 포장 작업은 멈추지 않습니다."
         )
@@ -785,7 +790,7 @@ class MainWindow(QMainWindow):
             return False
         thread = QThread(self)
         worker = BackupWorker(
-            PackagingBackup(self.packaging, self.config.backup, self.station)
+            BackupRunner(self.packaging, self.cache, self.config.backup, self.station)
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
