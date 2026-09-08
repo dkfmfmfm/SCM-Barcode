@@ -117,6 +117,9 @@ def main(argv: list[str] | None = None) -> int:
                 build_source_factory(config, config_path),
                 auto_sync=False,
             )
+            # This path tests backup explicitly below; avoid an asynchronous
+            # shutdown backup being interrupted by the self-test's app.quit().
+            window._final_backup_requested = True
             window.show()
             result = {"visible": False, "steppers": False}
 

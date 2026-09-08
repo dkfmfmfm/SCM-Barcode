@@ -61,7 +61,7 @@ Google Sheet 장애 시 `설정·관리자 도구 > Excel 비상 업데이트`�
 | 백업 주기 | 10분 | 확정 후 20초 뒤에도 자동 실행되므로 주기는 보조 수단이다 |
 | 사본 보관 | 90일 | 일자별 CSV와 상품 마스터 사본에만 적용된다. DB 사본은 지우지 않고, 상품 마스터는 최근 30개를 나이와 무관하게 남긴다 |
 
-저장하면 즉시 한 번 백업하고 배너 오른쪽이 `백업 HH:MM`으로 바뀐다. 이 표시가 `백업 미설정`이면 그 PC는 보호되지 않는 상태다.
+저장하면 즉시 한 번 백업한다. 외부 위치를 설정하지 않아도 로컬 자동 백업은 실행되며 `로컬 백업 · 외부 미설정`으로 표시된다. PC 고장에 대비한 외부 사본은 별도 위치 설정이 필요하다.
 
 ### 4.2 저장되는 파일
 
@@ -77,9 +77,10 @@ PC 이름으로 폴더가 갈리므로 여러 작업대가 같은 위치를 공�
 
 ### 4.3 PC 고장·교체 복구 절차
 
-1. 새 PC에 같은 버전의 BeyondPack을 설치하고 한 번 실행한 뒤 종료한다.
-2. 백업 위치의 `<PC이름>\packaging.db`를 새 PC의 `%LOCALAPPDATA%\BeyondPack\data\packaging.db`로 덮어쓴다.
-3. 실행해서 해당 출고건을 입력하고 `4. 출고건 작업 현황`에 지난 박스가 보이는지, `다음 #N`이 이어지는지 확인한다.
+1. 새 PC에 BeyondPack 2.3.0을 설치하고 실행한다. 작업자 이름을 입력한다.
+2. `설정·관리자 도구 > 포장 백업 복원`에서 최신 `packaging.db` 또는 시간별 `packaging-YYYYMMDD-HH.db`를 고른다.
+3. 복원 안내를 확인한다. 포장DB 무결성·구조·참조관계를 검사하고 복원 직전 안전 사본을 만든 뒤 전체 기록을 해당 시점으로 되돌린다. 두 PC의 기록을 합치는 기능은 아니다.
+4. 이전 작업 조회와 출고건 현황에서 수량·번호를 확인한다. 복원 직전 기록은 `data/backups/before-restore`에 보관된다.
 
 상품DB는 손댈 필요가 없다. 실행하면 Google Sheet에서 다시 내려받는다.
 
@@ -104,11 +105,11 @@ PC 이름으로 폴더가 갈리므로 여러 작업대가 같은 위치를 공�
 
 ### 4.6 수정·삭제 이력
 
-작업자가 마지막 박스를 수정하거나 삭제하면 사유와 함께 `audit_events`에 기록된다. 되돌린 시점의 박스번호·수량·무게·구성품이 통째로 남으므로 사후 확인이 가능하다.
+2.3.0부터 취소·정정 원본은 `box_revisions`에 전체 규격·구성품·사유·작업자와 함께 보관된다. `이전 작업 조회·이어하기` 화면에서 작업을 선택하면 확인할 수 있다. 정정 중 종료돼도 원본은 남고, 재확정에 성공할 때만 원본 보관과 새 기록 저장이 함께 적용된다. 구버전 `audit_events`도 유지한다.
 
 ```sql
 SELECT occurred_at, operator_name, action, reason, details_json
-FROM audit_events WHERE entity_type = 'BOX_GROUP' AND action IN ('AMEND','DELETE')
+FROM audit_events WHERE entity_type = 'BOX_GROUP' AND action IN ('AMEND','DELETE','CANCEL','CORRECT')
 ORDER BY id DESC;
 ```
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -45,12 +45,13 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .backup import BackupResult, BackupRunner, station_name
+from .backup import BackupResult, BackupRunner, restore_packaging_backup, station_name
 from .cache import ProductCacheRepository
 from .config import AppConfig, BackupSettings, LabelSettings, save_config
 from .diagnostics import create_diagnostic_bundle
 from .errors import BeyondPackError, PackagingValidationError
 from .exporter import export_shipment_xlsx
+from .history import JobHistoryDialog
 from .labels import box_numbers
 from .models import BoxGroupInput, BoxItem, Product, utc_now_iso
 from .normalization import normalize_shipment_code, positive_decimal, positive_int
@@ -360,6 +361,9 @@ class MainWindow(QMainWindow):
         self.items: list[BoxItem] = []
         self.job_id: str | None = None
         self.job_shipment = ""
+        self.edit_group_id = ""
+        self.edit_reason = ""
+        self._restoring_input = False
         self.last_saved: tuple[dict, list[dict]] | None = None
         self.sync_thread: QThread | None = None
         self.backup_thread: QThread | None = None
@@ -374,6 +378,7 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._connect_autosave()
         self._refresh_country_options()
+        self._restore_active_job()
         self._restore_draft()
         self._refresh_next_box_label()
         self._refresh_shipment_view()
@@ -572,7 +577,7 @@ class MainWindow(QMainWindow):
         self.amend_selected_button = QPushButton("선택 박스 수정")
         self.amend_selected_button.setEnabled(False)
         self.amend_selected_button.clicked.connect(self.amend_selected_group)
-        self.delete_selected_button = QPushButton("선택 박스 삭제")
+        self.delete_selected_button = QPushButton("선택 박스 확정 취소")
         self.delete_selected_button.setObjectName("dangerButton")
         self.delete_selected_button.setEnabled(False)
         self.delete_selected_button.clicked.connect(self.delete_selected_group)
@@ -634,6 +639,9 @@ class MainWindow(QMainWindow):
             ("테스트 라벨 출력", self.print_test_label),
             ("Excel 비상 업데이트", self.import_excel_products),
             ("관리자 진단파일 생성", self.create_diagnostics),
+            ("포장 백업 복원", self.restore_backup),
+            ("새 작업 시작", self.new_job),
+            ("구성품 정보 재확인", self.refresh_current_products),
         ):
             admin_menu.addAction(text, callback)
         self.excel_import_action = admin_menu.actions()[4]
@@ -642,6 +650,12 @@ class MainWindow(QMainWindow):
         utility_layout.addWidget(print_button, 0, 1)
         utility_layout.addWidget(export_button, 1, 0)
         utility_layout.addWidget(admin_button, 1, 1)
+        history_button = QPushButton("이전 작업 조회·이어하기")
+        history_button.clicked.connect(self.show_history)
+        finish_button = QPushButton("현재 작업 완료")
+        finish_button.clicked.connect(self.finish_job)
+        utility_layout.addWidget(history_button, 2, 0)
+        utility_layout.addWidget(finish_button, 2, 1)
         right.addWidget(utility_group)
         right.addStretch()
 
@@ -753,16 +767,16 @@ class MainWindow(QMainWindow):
     def _apply_backup_schedule(self) -> None:
         settings = self.config.backup
         self.backup_timer.stop()
-        if settings.active:
-            self.backup_timer.start(max(1, settings.interval_minutes) * 60_000)
+        self.backup_timer.start(max(1, settings.interval_minutes) * 60_000)
         self._refresh_backup_label()
 
     def _refresh_backup_label(self) -> None:
         style = "border-radius:6px; padding:4px 9px; font-weight:700;"
         if not self.config.backup.active:
-            self.backup_label.setText("백업 미설정")
+            self.backup_label.setText("로컬 백업 · 외부 미설정" if not self.last_backup else
+                ("로컬 백업 완료 · 외부 미설정" if self.last_backup.ok else "로컬 백업 실패"))
             self.backup_label.setToolTip(
-                "포장 실적이 이 PC에만 있습니다. "
+                "로컬 자동 백업은 같은 PC에 보관됩니다. PC 고장에 대비하려면 "
                 "'설정·관리자 도구 > 자동 백업 설정'에서 백업 위치를 지정하세요."
             )
             self.backup_label.setStyleSheet(f"background:#FDECEC; color:#B91C1C; {style}")
@@ -783,8 +797,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def run_backup(self, reason: str = "수동") -> bool:
-        if not self.config.backup.active:
-            self._refresh_backup_label()
+        if getattr(self, "_closing", False) and reason != "종료":
             return False
         if self.backup_thread and self.backup_thread.isRunning():
             return False
@@ -819,15 +832,11 @@ class MainWindow(QMainWindow):
         self.backup_thread = None
         if hasattr(self, "_backup_worker"):
             del self._backup_worker
+        if getattr(self, "_closing", False):
+            QTimer.singleShot(0, self.close)
 
     @Slot()
     def backup_now(self) -> None:
-        if not self.config.backup.active:
-            self._error(
-                "백업 위치가 지정되지 않았습니다. "
-                "'설정·관리자 도구 > 자동 백업 설정'에서 먼저 지정하세요. [BP-BACKUP-001]"
-            )
-            return
         if not self.run_backup("수동"):
             self.statusBar().showMessage("백업이 이미 진행 중입니다.", 3000)
 
@@ -850,17 +859,30 @@ class MainWindow(QMainWindow):
             )
             self.run_backup("수동")
         else:
-            self._success("자동 백업을 사용하지 않습니다.")
+            self._success("외부 백업을 사용하지 않습니다. 로컬 자동 백업은 유지됩니다.")
 
     def closeEvent(self, event) -> None:
         """종료 전에 마지막 백업을 시도한다.
 
         공유 폴더가 응답하지 않아도 종료가 막히지 않도록 기다리는 시간을 둔다.
         """
-        if self.config.backup.active and self.run_backup("종료"):
-            thread = self.backup_thread
-            if thread is not None:
-                thread.wait(5_000)
+        self.autosave_timer.stop()
+        self._save_draft()
+        # Never destroy a live QThread. Its completion re-attempts closing.
+        running = [t for t in (self.sync_thread, self.backup_thread) if t and t.isRunning()]
+        if running:
+            self.statusBar().showMessage("진행 중인 업데이트·백업이 끝나면 종료합니다.")
+            self._closing = True
+            event.ignore()
+            return
+        if not getattr(self, "_final_backup_requested", False):
+            self._closing = True
+            self._final_backup_requested = True
+            if self.run_backup("종료"):
+                event.ignore()
+                return
+        self.backup_timer.stop()
+        self.backup_after_confirm.stop()
         super().closeEvent(event)
 
     def _show_initial_cache_state(self) -> None:
@@ -877,6 +899,125 @@ class MainWindow(QMainWindow):
         else:
             self.cache_blocked = True
             self._set_sync_state("NO_DATA", "처음 사용하려면 상품정보 업데이트가 필요합니다.")
+
+    def _load_job(self, job: dict) -> None:
+        self._restoring_input = True
+        try:
+            self.shipment_input.blockSignals(True)
+            self.shipment_input.setText(job["shipment_code"])
+            self.shipment_input.blockSignals(False)
+            self.job_id = job["job_id"]
+            self.job_shipment = job["shipment_code"]
+            self.last_saved = self.packaging.last_group(self.job_id)
+            if not self.operator_input.text().strip():
+                self.operator_input.setText(job["operator_name"])
+            self._clear_scan(keep_message=True)
+            self._refresh_next_box_label()
+            self._refresh_shipment_view()
+        finally:
+            self._restoring_input = False
+
+    def _restore_active_job(self) -> None:
+        session = self.packaging.load_draft("active-job") or {}
+        job = self.packaging.job(str(session.get("job_id") or ""))
+        if job and job["status"] == "OPEN":
+            self._load_job(job)
+
+    @Slot()
+    def show_history(self) -> None:
+        dialog = JobHistoryDialog(self.packaging, self)
+        if dialog.exec() != QDialog.Accepted or not self._guard_pending_input():
+            return
+        try:
+            job = self.packaging.resume_job(dialog.selected_job_id, self.operator_input.text())
+            self._load_job(job)
+            self._success(f"출고건 {job['shipment_code']}의 이전 작업을 이어갑니다.")
+        except BeyondPackError as exc:
+            self._error(str(exc))
+
+    @Slot()
+    def finish_job(self) -> None:
+        if not self._guard_pending_input():
+            return
+        if not self.job_id:
+            self._error("완료할 작업이 없습니다. 이전 작업에서 선택하거나 박스를 먼저 확정하세요.")
+            return
+        if QMessageBox.question(self, "작업 완료", "현재 작업을 완료할까요? 완료 후에는 이력에서 조회·출력할 수 있습니다.") != QMessageBox.Yes:
+            return
+        try:
+            self.packaging.close_job(self.job_id, self.operator_input.text())
+        except BeyondPackError as exc:
+            self._error(str(exc))
+            return
+        self.job_id = None
+        self.job_shipment = ""
+        self._refresh_shipment_view()
+        self.backup_after_confirm.start()
+        self._success("작업을 완료했습니다. '이전 작업 조회·이어하기'에서 기록을 확인할 수 있습니다.")
+
+    @Slot()
+    def new_job(self) -> None:
+        if not self._guard_pending_input():
+            return
+        self.job_id = None
+        self.job_shipment = ""
+        self.last_saved = None
+        self.packaging.clear_draft("active-job")
+        self.shipment_input.clear()
+        self._success("새 출고건 번호를 입력하세요. 이전 작업은 이력에서 이어갈 수 있습니다.")
+
+    @Slot()
+    def refresh_current_products(self) -> None:
+        if not self.items:
+            self._error("재확인할 구성품이 없습니다.")
+            return
+        try:
+            updated = [BoxItem.from_product(self.cache.lookup(i.fnsku, i.country_code), i.qty_per_box) for i in self.items]
+        except BeyondPackError as exc:
+            self._error(f"{exc} 사용중지·미등록 상품은 구성품에서 제거한 뒤 다시 확인하세요.")
+            return
+        changes = "\n".join(f"{i.fnsku}: {i.item_code} / {i.sku} / {i.product_name}" for i in updated)
+        if QMessageBox.question(self, "구성품 정보 재확인", changes + "\n\n현재 상품정보로 갱신할까요? 수량은 유지됩니다.") != QMessageBox.Yes:
+            return
+        self.items = updated
+        self._refresh_items_table()
+        self._save_draft()
+        self._success("구성품 정보를 갱신했습니다. 실물 상품과 대조한 뒤 확정하세요.")
+
+    @Slot()
+    def restore_backup(self) -> None:
+        if not self._guard_pending_input():
+            return
+        if any(t and t.isRunning() for t in (self.sync_thread, self.backup_thread)):
+            self._error("업데이트·백업이 끝난 뒤 복원하세요.")
+            return
+        filename, _ = QFileDialog.getOpenFileName(self, "포장 백업 복원",
+            str(self.config.resolved_data_dir / "backups"), "포장 DB (*.db)")
+        if not filename:
+            return
+        if QMessageBox.question(self, "포장기록 전체 복원",
+            "이 PC의 포장기록 전체를 선택한 백업 시점으로 되돌립니다.\n"
+            "현재 기록은 복원 직전 안전 사본으로 보관됩니다. 다른 PC 기록과 합쳐지지 않습니다.\n계속할까요?") != QMessageBox.Yes:
+            return
+        if any(t and t.isRunning() for t in (self.sync_thread, self.backup_thread)):
+            self._error("백업이 시작됐습니다. 완료된 뒤 다시 복원하세요.")
+            return
+        try:
+            safety = restore_packaging_backup(self.packaging, Path(filename), self.operator_input.text())
+        except Exception as exc:
+            self._error(f"백업 복원 실패: {exc}")
+            return
+        self.job_id = None
+        self.job_shipment = ""
+        self.last_saved = None
+        self.shipment_input.blockSignals(True)
+        self.shipment_input.clear()
+        self.shipment_input.blockSignals(False)
+        self._restore_active_job()
+        self._restore_draft()
+        self._refresh_shipment_view()
+        self._refresh_next_box_label()
+        QMessageBox.information(self, "복원 완료", f"이전 작업을 조회할 수 있습니다.\n복원 직전 안전 사본: {safety}")
 
     def _selected_country_code(self) -> str:
         return str(self.country_combo.currentData() or "").strip().upper()
@@ -1053,6 +1194,8 @@ class MainWindow(QMainWindow):
         self.sync_thread = None
         if hasattr(self, "_sync_worker"):
             del self._sync_worker
+        if getattr(self, "_closing", False):
+            QTimer.singleShot(0, self.close)
 
     def _set_sync_state(self, state: str, detail: str) -> None:
         background, foreground, title = COLORS.get(state, COLORS["ERROR"])
@@ -1205,6 +1348,12 @@ class MainWindow(QMainWindow):
         저장하지 않도록 현재 작업을 끊는다.
         """
         code = self._shipment_code()
+        if self.edit_group_id and code != self.job_shipment:
+            self.shipment_input.blockSignals(True)
+            self.shipment_input.setText(self.job_shipment)
+            self.shipment_input.blockSignals(False)
+            self._error("정정 중에는 출고건을 바꿀 수 없습니다. F4로 정정을 취소하세요.")
+            return
         if self.job_id and code != self.job_shipment:
             self.job_id = None
         self._refresh_next_box_label()
@@ -1293,6 +1442,10 @@ class MainWindow(QMainWindow):
         # 마지막 박스만 되돌릴 수 있다. 중간 박스를 지우면 이미 붙인 라벨의
         # 번호와 이후 번호가 어긋나 실물과 기록을 맞출 수 없다.
         is_last = selected and row == self.progress_table.rowCount() - 1
+        if is_last:
+            saved = self.packaging.box_group(self._selected_box_group_id())
+            job = self.packaging.job(saved[0]["job_id"]) if saved else None
+            is_last = bool(job and job["status"] == "OPEN")
         self.reprint_selected_button.setEnabled(selected)
         for button in (self.amend_selected_button, self.delete_selected_button):
             button.setEnabled(is_last)
@@ -1316,13 +1469,15 @@ class MainWindow(QMainWindow):
         reason, accepted = QInputDialog.getText(
             self,
             title,
-            f"{span} 박스 {count}개를 되돌립니다.\n"
-            "이미 출력한 라벨은 폐기하세요.\n\n사유를 입력하세요(기록에 남습니다):",
+            f"{span} 박스 {count}개의 {title} 작업입니다.\n"
+            "정정은 재확정할 때 적용됩니다. 취소·정정 후 기존 라벨은 폐기하세요.\n\n사유를 입력하세요(기록에 남습니다):",
         )
         return reason.strip() if accepted else ""
 
     def _guard_pending_input(self) -> bool:
-        if self.items:
+        if self.items or self.edit_group_id or self.current_product or any(
+            w.value() for w in (self.box_count, self.weight, self.length, self.width, self.height)
+        ):
             self._error(
                 "작성 중인 박스 구성품이 있습니다. 확정하거나 F4로 초기화한 뒤 진행하세요. [BP-PACK-002]"
             )
@@ -1331,24 +1486,22 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def delete_selected_group(self) -> None:
+        if not self._guard_pending_input():
+            return
         box_group_id = self._selected_box_group_id()
         saved = self.packaging.box_group(box_group_id) if box_group_id else None
         if not saved:
-            self._error("삭제할 박스 행을 선택하세요. [BP-PACK-002]", beep=False)
+            self._error("취소할 박스 행을 선택하세요. [BP-PACK-002]", beep=False)
             return
         group, _items = saved
-        reason = self._take_back_reason("선택 박스 삭제", group)
+        reason = self._take_back_reason("선택 박스 확정 취소", group)
         if not reason:
             return
-        self._take_back(box_group_id, reason, "DELETE")
+        self._take_back(box_group_id, reason, "CANCEL")
 
     @Slot()
     def amend_selected_group(self) -> None:
-        """확정한 박스를 되돌려 입력칸으로 되살린다.
-
-        수정은 되돌린 뒤 다시 확정하는 방식이다. 같은 검증을 그대로 거치고,
-        마지막 박스만 되돌리므로 다시 확정하면 같은 박스번호가 붙는다.
-        """
+        """원본은 유지하고 정정 초안을 만든다. 교체는 확정 트랜잭션에서만 한다."""
         if not self._guard_pending_input():
             return
         box_group_id = self._selected_box_group_id()
@@ -1360,10 +1513,15 @@ class MainWindow(QMainWindow):
         reason = self._take_back_reason("선택 박스 수정", group)
         if not reason:
             return
-        restored = self._take_back(box_group_id, reason, "AMEND")
-        if restored is None:
+        job = self.packaging.job(group["job_id"])
+        if not job or job["status"] != "OPEN" or not self.packaging.is_last_box_group(box_group_id):
+            self._error("진행 중인 작업의 마지막 박스만 정정할 수 있습니다.")
             return
-        group, items = restored
+        self.job_id = group["job_id"]
+        self.job_shipment = group["shipment_code"]
+        self.edit_group_id = box_group_id
+        self.edit_reason = reason
+        items = _items
         self.items = [
             BoxItem(
                 fnsku=str(item["fnsku"]),
@@ -1391,8 +1549,8 @@ class MainWindow(QMainWindow):
         self.work_tabs.setCurrentIndex(0)
         self._save_draft()
         self._success(
-            f"박스 #{int(group['box_start_no'])} 내용을 입력칸으로 되돌렸습니다. "
-            "고친 뒤 Ctrl+Enter로 다시 확정하세요. 이미 출력한 라벨은 폐기하세요."
+            f"박스 #{int(group['box_start_no'])} 정정 중입니다. 원본은 확정 전까지 유지됩니다. "
+            "고친 뒤 Ctrl+Enter로 확정하세요. F4를 누르면 원본을 유지하고 정정을 취소합니다."
         )
 
     def _take_back(
@@ -1414,12 +1572,12 @@ class MainWindow(QMainWindow):
         self._refresh_next_box_label()
         self._refresh_shipment_view()
         self.backup_after_confirm.start()
-        if action == "DELETE":
+        if action in {"DELETE", "CANCEL"}:
             start = int(group["box_start_no"])
             count = int(group["box_count"])
             span = f"#{start}" if count == 1 else f"#{start}~#{start + count - 1}"
             self._success(
-                f"박스 {span}를 삭제했습니다. 다음 박스는 #{start}입니다. "
+                f"박스 {span}의 확정을 취소했습니다. 원본은 이력에 보존됩니다. 다음 박스는 #{start}입니다. "
                 "이미 출력한 라벨은 폐기하세요."
             )
         return group, items
@@ -1462,6 +1620,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def confirm_box_group(self) -> None:
         try:
+            if getattr(self, "_closing", False):
+                return
+            if self.sync_thread and self.sync_thread.isRunning():
+                raise PackagingValidationError("상품정보 업데이트가 끝난 뒤 확정하세요.")
             if not self.items:
                 raise PackagingValidationError("박스에 상품을 한 개 이상 추가하세요.")
             operator_name = self.operator_input.text().strip()
@@ -1480,22 +1642,24 @@ class MainWindow(QMainWindow):
                 height_cm=positive_decimal(self.height.value(), "높이", Decimal(str(self.config.dimension_max_cm))),
                 items=tuple(self.items),
             )
-            if not self.job_id or self.job_shipment != shipment_code:
-                self.job_id = self.packaging.create_job(
-                    operator_name,
-                    self.cache.info().data_version,
-                    __version__,
-                    shipment_code,
+            with self.cache.validated_items(value.items) as (checked, info):
+                if not self.job_id or self.job_shipment != shipment_code:
+                    self.job_id = self.packaging.create_job(
+                        operator_name, info.data_version, __version__, shipment_code,
+                    )
+                    self.job_shipment = shipment_code
+                saved = self.packaging.save_box_group(
+                    self.job_id, replace(value, items=checked), operator_name,
+                    product_db_version=info.data_version, verified_at=utc_now_iso(),
+                    draft_key=self.DRAFT_KEY, replaces_group_id=self.edit_group_id,
+                    reason=self.edit_reason,
                 )
-                self.job_shipment = shipment_code
-            saved = self.packaging.save_box_group(
-                self.job_id, value, operator_name
-            )
             self.last_saved = self.packaging.last_group(self.job_id)
         except BeyondPackError as exc:
             self._error(f"{exc} [{exc.code}]")
             return
-        self.packaging.clear_draft(self.DRAFT_KEY)
+        self.edit_group_id = ""
+        self.edit_reason = ""
         self.items.clear()
         self._refresh_items_table()
         self._clear_scan(keep_message=True)
@@ -1525,6 +1689,8 @@ class MainWindow(QMainWindow):
         if self.items or any(w.value() for w in (self.weight, self.length, self.width, self.height)):
             if QMessageBox.question(self, "입력 초기화", "현재 입력을 모두 지울까요?") != QMessageBox.Yes:
                 return
+        self.edit_group_id = ""
+        self.edit_reason = ""
         self.items.clear()
         self._refresh_items_table()
         self._clear_scan(keep_message=True)
@@ -1693,7 +1859,13 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "진단파일 생성 완료", f"인증정보를 제외한 진단파일을 만들었습니다.\n{path}")
 
     def _save_draft(self) -> None:
+        if self._restoring_input:
+            return
         payload = {
+            "job_id": self.job_id,
+            "operator_name": self.operator_input.text().strip(),
+            "edit_group_id": self.edit_group_id,
+            "edit_reason": self.edit_reason,
             "items": [asdict(item) for item in self.items],
             "box_count": self.box_count.value(),
             "weight": self.weight.value(),
@@ -1705,8 +1877,8 @@ class MainWindow(QMainWindow):
         }
         # 출고건이나 국가만 들어 있는 상태는 복구할 작업이 아니다. 이것까지
         # 저장하면 박스를 확정하고 정상 종료해도 다음 실행에서 복구 창이 뜬다.
-        if self.items or any(
-            payload[key] for key in ("weight", "length", "width", "height")
+        if self.items or self.edit_group_id or any(
+            payload[key] for key in ("box_count", "weight", "length", "width", "height")
         ):
             self.packaging.save_draft(self.DRAFT_KEY, payload)
         else:
@@ -1724,8 +1896,16 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             self.packaging.clear_draft(self.DRAFT_KEY)
             return
+        self._restoring_input = True
         try:
             self.shipment_input.setText(str(draft.get("shipment_code", "")))
+            job = self.packaging.job(str(draft.get("job_id") or ""))
+            if job and job["status"] == "OPEN" and job["shipment_code"] == self._shipment_code():
+                self.job_id = job["job_id"]
+                self.job_shipment = job["shipment_code"]
+            self.operator_input.setText(str(draft.get("operator_name") or self.config.operator_name))
+            self.edit_group_id = str(draft.get("edit_group_id") or "")
+            self.edit_reason = str(draft.get("edit_reason") or "")
             self._select_country(str(draft.get("selected_country_code", "")))
             self.items = [BoxItem(**item) for item in draft.get("items", [])]
             if self.items:
@@ -1737,8 +1917,10 @@ class MainWindow(QMainWindow):
             self.height.setValue(float(draft.get("height", 0)))
             self._refresh_items_table()
             self.next_action.setText("복구 완료: 구성품과 포장정보를 확인한 뒤 박스를 확정하세요.")
-        except Exception:
-            self.packaging.clear_draft(self.DRAFT_KEY)
+        except Exception as exc:
+            self._error(f"미완료 입력을 복구하지 못했습니다. 원본 임시저장은 유지됩니다: {exc}")
+        finally:
+            self._restoring_input = False
 
     def _clear_scan(self, keep_message: bool = False) -> None:
         self.current_product = None
