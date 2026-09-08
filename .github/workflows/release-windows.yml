@@ -78,19 +78,19 @@ jobs:
         shell: pwsh
         run: .\scripts\build-windows.ps1
 
-      - name: Build single-file executable
-        shell: pwsh
-        run: .\scripts\build-windows.ps1 -OneFile
-
       - name: Run Windows recovery UI regression tests
         shell: pwsh
         run: |
           $env:PYTHONPATH = "src"
           $env:QT_QPA_PLATFORM = "offscreen"
-          python -c "from PySide6.QtWidgets import QApplication"
+          .\.venv\Scripts\python.exe -c "from PySide6.QtWidgets import QApplication"
           if ($LASTEXITCODE -ne 0) { throw "Qt runtime is required for recovery UI tests." }
-          python -m unittest discover -s tests -p test_recovery_ui.py -v
+          .\.venv\Scripts\python.exe -m unittest discover -s tests -p test_recovery_ui.py -v
           if ($LASTEXITCODE -ne 0) { throw "Recovery UI tests failed." }
+
+      - name: Build single-file executable
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -OneFile
 
       - name: GUI startup self-test
         shell: pwsh
