@@ -4,7 +4,7 @@ import json
 from datetime import datetime, time, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from .exporter import export_job_xlsx
+from .presentation import WordLabel, readable_table, stylesheet
 
 
 def local_stamp(value: str) -> str:
@@ -31,15 +32,27 @@ class JobHistoryDialog(QDialog):
         self.jobs = []
         self.groups = []
         self.revisions = []
-        self.setWindowTitle("이전 작업 조회·이어하기")
+        self.setWindowTitle("이전 작업")
         self.resize(1080, 700)
+        self.setMinimumSize(840, 540)
+        self.setStyleSheet(stylesheet())
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        title = QLabel("이전 작업")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        caption = WordLabel("진행 중인 작업을 이어가거나, 확정 내역과 변경 이력을 확인하세요.")
+        caption.setObjectName("fieldCaption")
+        layout.addWidget(caption)
         filters = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("출고건·작업자·작업ID 검색")
         self.status = QComboBox()
         for label, value in (("전체 상태", ""), ("진행 중", "OPEN"), ("완료", "COMPLETED")):
             self.status.addItem(label, value)
+        self.period = QComboBox()
+        for label, value in (("전체 기간", 0), ("최근 7일", 7), ("최근 30일", 30), ("직접 지정", -1)):
+            self.period.addItem(label, value)
         self.start = QDateEdit(QDate(2000, 1, 1))
         self.end = QDateEdit(QDate.currentDate())
         for widget in (self.start, self.end):
@@ -48,32 +61,65 @@ class JobHistoryDialog(QDialog):
         find = QPushButton("조회")
         find.clicked.connect(self.refresh)
         self.search.returnPressed.connect(self.refresh)
-        for widget in (self.search, self.status, QLabel("최근 작업일"), self.start, QLabel("~"), self.end, find):
+        for widget in (self.search, self.status, self.period, find):
             filters.addWidget(widget)
+        filters.setStretch(0, 1)
         layout.addLayout(filters)
+        dates = QHBoxLayout()
+        dates.addWidget(QLabel("최근 작업일"))
+        dates.addWidget(self.start)
+        dates.addWidget(QLabel("—"))
+        dates.addWidget(self.end)
+        dates.addStretch()
+        self.result_count = QLabel()
+        self.result_count.setObjectName("fieldCaption")
+        dates.addWidget(self.result_count)
+        layout.addLayout(dates)
         self.table = self._table(["출고건", "최근 작업", "작업자", "상태", "확정 박스", "작업ID"])
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Interactive)
+        self.table.setColumnWidth(5, 115)
         self.table.itemSelectionChanged.connect(self.show_job)
         layout.addWidget(self.table, 2)
         self.tabs = QTabWidget()
         self.group_table = self._table(["박스번호", "박스수량", "무게(kg)", "확정시각"])
         self.revision_table = self._table(["처리", "원래 박스번호", "사유", "처리자", "시각"])
+        self.revision_table.horizontalHeader().setStretchLastSection(False)
+        self.revision_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.revision_table.cellDoubleClicked.connect(self.show_revision)
         self.tabs.addTab(self.group_table, "확정 박스")
-        self.tabs.addTab(self.revision_table, "취소·정정 이력 (더블클릭: 원본)")
+        self.tabs.addTab(self.revision_table, "취소·정정 이력")
         layout.addWidget(self.tabs, 2)
         actions = QHBoxLayout()
         self.resume = QPushButton("선택 작업 이어하기")
         self.resume.clicked.connect(self.choose_job)
-        export = QPushButton("선택 작업 Excel 저장")
-        export.clicked.connect(self.export_job)
-        reprint = QPushButton("선택 박스 라벨 재출력")
-        reprint.clicked.connect(self.print_group)
+        self.resume.setObjectName("confirmButton")
+        self.export = QPushButton("작업 Excel 저장")
+        self.export.clicked.connect(self.export_job)
+        self.reprint = QPushButton("라벨 재출력")
+        self.reprint.clicked.connect(self.print_group)
+        self.original = QPushButton("변경 전 원본")
+        self.original.clicked.connect(lambda: self.show_revision(self.revision_table.currentRow(), 0))
         close = QPushButton("닫기")
         close.clicked.connect(self.reject)
-        for widget in (self.resume, export, reprint, close):
+        for widget in (self.resume, self.export, self.reprint, self.original, close):
             actions.addWidget(widget)
         layout.addLayout(actions)
-        layout.addWidget(QLabel("완료된 작업은 조회·출력만 가능합니다. 취소·정정 원본은 실적 합계에 포함되지 않습니다."))
+        layout.addWidget(WordLabel("완료 작업은 조회·출력할 수 있습니다. 취소·정정 원본은 실적 합계에서 제외됩니다."))
+        self.search_timer = QTimer(self)
+        self.search_timer.setSingleShot(True)
+        self.search_timer.setInterval(250)
+        self.search_timer.timeout.connect(self.refresh)
+        self.search.textChanged.connect(lambda _: self.search_timer.start())
+        self.status.currentIndexChanged.connect(self.refresh)
+        self.period.currentIndexChanged.connect(self.refresh)
+        self.start.dateChanged.connect(self.refresh)
+        self.end.dateChanged.connect(self.refresh)
+        self.group_table.itemSelectionChanged.connect(self.refresh_actions)
+        self.revision_table.itemSelectionChanged.connect(self.refresh_actions)
+        self.tabs.currentChanged.connect(self.refresh_actions)
         self.refresh()
 
     @staticmethod
@@ -85,6 +131,7 @@ class JobHistoryDialog(QDialog):
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.horizontalHeader().setStretchLastSection(True)
+        readable_table(table, (0, 2))
         return table
 
     @staticmethod
@@ -92,15 +139,34 @@ class JobHistoryDialog(QDialog):
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             for j, value in enumerate(row):
-                table.setItem(i, j, QTableWidgetItem(str(value)))
+                cell = QTableWidgetItem(str(value))
+                cell.setToolTip(str(value))
+                table.setItem(i, j, cell)
+        table.resizeRowsToContents()
 
     def refresh(self):
         def bound(qdate):
             return datetime.combine(qdate.toPython(), time.min).astimezone().astimezone(timezone.utc).isoformat()
-        self.jobs = self.repository.search_jobs(self.search.text().strip(), str(self.status.currentData()),
-            bound(self.start.date()), bound(self.end.date().addDays(1)))
+        previous = self.current_job()
+        previous_id = previous["job_id"] if previous else ""
+        days = self.period.currentData()
+        for widget in (self.start, self.end):
+            widget.setEnabled(days == -1)
+        if days == -1 and self.start.date() > self.end.date():
+            self.result_count.setText("시작일을 종료일 이전으로 지정하세요.")
+            self.jobs = []
+        else:
+            since = bound(self.start.date()) if days == -1 else (bound(QDate.currentDate().addDays(1 - days)) if days else "")
+            until = bound(self.end.date().addDays(1)) if days == -1 else ""
+            self.jobs = self.repository.search_jobs(self.search.text().strip(), str(self.status.currentData()), since, until)
+            self.result_count.setText(f"{len(self.jobs):,}개 작업" if self.jobs else "일치하는 작업이 없습니다.")
+        self.table.blockSignals(True)
         self.fill(self.table, [(j["shipment_code"] or "(구버전)", local_stamp(j["updated_at"]),
             j["operator_name"], "진행 중" if j["status"] == "OPEN" else "완료", j["box_count"], j["job_id"]) for j in self.jobs])
+        self.table.blockSignals(False)
+        if self.jobs:
+            selected = next((i for i, j in enumerate(self.jobs) if j["job_id"] == previous_id), 0)
+            self.table.selectRow(selected)
         self.show_job()
 
     def current_job(self):
@@ -118,6 +184,12 @@ class JobHistoryDialog(QDialog):
         self.fill(self.revision_table, [("취소" if r["state"] == "CANCELLED" else "정정",
             json.loads(r["snapshot_json"])["group"]["box_start_no"], r["reason"],
             r["operator_name"], local_stamp(r["occurred_at"])) for r in self.revisions])
+        self.refresh_actions()
+
+    def refresh_actions(self):
+        self.export.setEnabled(self.current_job() is not None)
+        self.reprint.setEnabled(self.tabs.currentIndex() == 0 and bool(self.group_table.selectedItems()))
+        self.original.setEnabled(self.tabs.currentIndex() == 1 and bool(self.revision_table.selectedItems()))
 
     def choose_job(self):
         job = self.current_job()

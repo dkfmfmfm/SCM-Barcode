@@ -1,4 +1,5 @@
 import os
+import sys
 import importlib.util
 import tempfile
 import unittest
@@ -27,12 +28,15 @@ from beyondpack.sources.base import ProductBatch
 
 
 @unittest.skipIf(QApplication is None, "Qt runtime unavailable; exercised by Windows post-build gate")
-class RecoveryUITests(unittest.TestCase):
+class RecoveryUIHarness(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.gui_errors = []
+        self.previous_excepthook = sys.excepthook
+        sys.excepthook = lambda kind, error, trace: self.gui_errors.append(error)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.config = AppConfig(data_dir=str(self.root), operator_name="작업자")
@@ -56,6 +60,8 @@ class RecoveryUITests(unittest.TestCase):
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.backup_patch.stop()
         self.temp.cleanup()
+        sys.excepthook = self.previous_excepthook
+        self.assertEqual(self.gui_errors, [], "Unhandled exception in a Qt callback")
 
     def open_window(self):
         window = MainWindow(self.config, self.root / "config.json", self.cache, self.repo,
@@ -79,6 +85,8 @@ class RecoveryUITests(unittest.TestCase):
         self.window.confirm_box_group()
         self.assertEqual(len(self.repo.shipment_groups("SHIP-1")), 1)
 
+
+class RecoveryUITests(RecoveryUIHarness):
     def test_restart_reopens_exact_job_and_last_label_without_empty_draft_prompt(self):
         self.confirm()
         job_id = self.window.job_id
