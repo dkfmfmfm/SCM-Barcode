@@ -109,6 +109,65 @@ class PackagingRepository:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_shipment ON packaging_jobs(shipment_code)"
             )
+            group_columns = {row["name"] for row in conn.execute("PRAGMA table_info(box_groups)")}
+            for name in ("product_db_version", "verified_at", "operator_name"):
+                if name not in group_columns:
+                    conn.execute(f"ALTER TABLE box_groups ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS box_revisions (
+                    box_group_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES packaging_jobs(job_id),
+                    state TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    operator_name TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    replacement_id TEXT NOT NULL DEFAULT '',
+                    snapshot_json TEXT NOT NULL
+                )
+            """)
+
+    def job(self, job_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM packaging_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def search_jobs(
+        self, search: str = "", status: str = "", start_at: str = "", end_at: str = ""
+    ) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute("""
+                SELECT j.*, COUNT(g.box_group_id) AS group_count,
+                       COALESCE(SUM(g.box_count), 0) AS box_count
+                FROM packaging_jobs j LEFT JOIN box_groups g ON g.job_id = j.job_id
+                WHERE (? = '' OR instr(lower(j.shipment_code || ' ' || j.operator_name || ' ' || j.job_id), lower(?)) > 0)
+                  AND (? = '' OR j.status = ?)
+                  AND (? = '' OR j.updated_at >= ?)
+                  AND (? = '' OR j.updated_at < ?)
+                GROUP BY j.job_id ORDER BY j.updated_at DESC, j.job_id
+                """, (search, search, status, status, start_at, start_at, end_at, end_at)).fetchall()
+        return [dict(row) for row in rows]
+
+    def resume_job(self, job_id: str, operator_name: str) -> dict:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM packaging_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if not row or row["status"] != "OPEN":
+                raise PackagingValidationError("진행 중인 작업만 이어서 할 수 있습니다.")
+            if not operator_name.strip():
+                raise PackagingValidationError("작업자 이름 또는 사번을 입력하세요.")
+            self._audit(conn, operator_name, "RESUME", "JOB", job_id)
+            conn.execute("""INSERT INTO drafts VALUES ('active-job', ?, ?)
+                ON CONFLICT(draft_key) DO UPDATE SET payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at""", (json.dumps({"job_id": job_id}), utc_now_iso()))
+        return dict(row)
+
+    def revision_history(self, job_id: str = "") -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute("""SELECT r.*, j.shipment_code FROM box_revisions r
+                JOIN packaging_jobs j ON j.job_id = r.job_id
+                WHERE ? = '' OR r.job_id = ? ORDER BY r.occurred_at DESC, r.rowid DESC""",
+                (job_id, job_id)).fetchall()
+        return [dict(row) for row in rows]
 
     def create_job(
         self,
@@ -203,7 +262,7 @@ class PackagingRepository:
                 """
                 SELECT g.box_group_id, g.box_start_no, g.box_count, g.weight_kg,
                        g.length_cm, g.width_cm, g.height_cm, g.created_at,
-                       j.operator_name,
+                       COALESCE(NULLIF(g.operator_name, ''), j.operator_name) AS operator_name,
                        COUNT(i.id) AS item_count,
                        COALESCE(SUM(i.qty_per_box), 0) AS total_qty,
                        MIN(i.fnsku) AS first_fnsku,
@@ -228,8 +287,10 @@ class PackagingRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT j.shipment_code, j.job_id, j.created_at, j.operator_name,
-                       j.product_db_version, j.app_version, j.status,
+                SELECT j.shipment_code, j.job_id, j.created_at,
+                       COALESCE(NULLIF(g.operator_name, ''), j.operator_name) AS operator_name,
+                       COALESCE(NULLIF(g.product_db_version, ''), j.product_db_version) AS product_db_version,
+                       j.app_version, j.status,
                        g.box_group_id, g.box_start_no, g.box_count,
                        g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
                        g.created_at AS box_created_at,
@@ -297,6 +358,7 @@ class PackagingRepository:
         if not cleaned:
             raise PackagingValidationError("수정·삭제 사유를 입력하세요.")
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             group = conn.execute(
                 """
                 SELECT g.*, j.shipment_code
@@ -308,6 +370,11 @@ class PackagingRepository:
             ).fetchone()
             if group is None:
                 raise PackagingValidationError("해당 박스를 찾을 수 없습니다.")
+            if not operator_name.strip():
+                raise PackagingValidationError("작업자 이름 또는 사번을 입력하세요.")
+            status = conn.execute("SELECT status FROM packaging_jobs WHERE job_id = ?", (group["job_id"],)).fetchone()[0]
+            if status != "OPEN":
+                raise PackagingValidationError("완료된 작업은 수정·취소할 수 없습니다.")
             if self._last_box_group_id(conn, box_group_id) != box_group_id:
                 raise PackagingValidationError(
                     "출고건의 마지막 박스만 수정·삭제할 수 있습니다. "
@@ -321,6 +388,7 @@ class PackagingRepository:
                 ).fetchall()
             ]
             saved = dict(group)
+            self._archive_group(conn, saved, items, "CANCELLED", operator_name, cleaned)
             conn.execute("DELETE FROM box_items WHERE box_group_id = ?", (box_group_id,))
             conn.execute("DELETE FROM box_groups WHERE box_group_id = ?", (box_group_id,))
             conn.execute(
@@ -335,14 +403,19 @@ class PackagingRepository:
                 box_group_id,
                 reason=cleaned,
                 details={
-                    "shipment_code": saved["shipment_code"],
-                    "box_start_no": saved["box_start_no"],
-                    "box_count": saved["box_count"],
-                    "weight_kg": saved["weight_kg"],
+                    "group": saved,
                     "items": items,
                 },
             )
         return saved, items
+
+    @staticmethod
+    def _archive_group(conn, group, items, state, operator, reason, replacement_id=""):
+        conn.execute("INSERT INTO box_revisions VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
+            group["box_group_id"], group["job_id"], state, utc_now_iso(), operator,
+            reason, replacement_id,
+            json.dumps({"group": group, "items": items}, ensure_ascii=False, default=str),
+        ))
 
     def audit_events(self, limit: int = 200) -> list[dict]:
         """감사 기록을 최근 순으로 돌려준다. 수정·삭제 이력 확인용."""
@@ -367,8 +440,10 @@ class PackagingRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT j.shipment_code, j.job_id, j.created_at, j.operator_name,
-                       j.product_db_version, j.app_version, j.status,
+                SELECT j.shipment_code, j.job_id, j.created_at,
+                       COALESCE(NULLIF(g.operator_name, ''), j.operator_name) AS operator_name,
+                       COALESCE(NULLIF(g.product_db_version, ''), j.product_db_version) AS product_db_version,
+                       j.app_version, j.status,
                        g.box_group_id, g.box_start_no, g.box_count,
                        g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
                        g.created_at AS box_created_at,
@@ -405,23 +480,41 @@ class PackagingRepository:
         return dict(group), [dict(row) for row in items]
 
     def save_box_group(
-        self, job_id: str, value: BoxGroupInput, operator_name: str
+        self, job_id: str, value: BoxGroupInput, operator_name: str,
+        *, product_db_version: str = "", verified_at: str = "",
+        draft_key: str | None = None, replaces_group_id: str = "", reason: str = ""
     ) -> SavedBoxGroup:
         if not value.items:
             raise PackagingValidationError("박스에 상품을 한 개 이상 추가하세요.")
         group_id = uuid.uuid4().hex
         now = utc_now_iso()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             job = conn.execute(
                 "SELECT status, shipment_code FROM packaging_jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
             if job is None or job["status"] != "OPEN":
                 raise PackagingValidationError("저장 가능한 작업이 아닙니다.")
+            if replaces_group_id:
+                if not reason.strip():
+                    raise PackagingValidationError("정정 사유를 입력하세요.")
+                original = conn.execute("SELECT * FROM box_groups WHERE box_group_id = ? AND job_id = ?",
+                    (replaces_group_id, job_id)).fetchone()
+                if original is None or self._last_box_group_id(conn, replaces_group_id) != replaces_group_id:
+                    raise PackagingValidationError("정정 대상이 변경됐습니다. 마지막 박스를 다시 선택하세요.")
+                old_items = [dict(row) for row in conn.execute(
+                    "SELECT * FROM box_items WHERE box_group_id = ? ORDER BY id", (replaces_group_id,))]
+                self._archive_group(conn, dict(original), old_items, "CORRECTED", operator_name, reason.strip(), group_id)
+                conn.execute("DELETE FROM box_items WHERE box_group_id = ?", (replaces_group_id,))
+                conn.execute("DELETE FROM box_groups WHERE box_group_id = ?", (replaces_group_id,))
             start = self._next_box_number(conn, str(job["shipment_code"]))
             conn.execute(
                 """
-                INSERT INTO box_groups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO box_groups(box_group_id, job_id, box_start_no, box_count,
+                    weight_kg, length_cm, width_cm, height_cm, created_at,
+                    product_db_version, verified_at, operator_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     group_id,
@@ -433,6 +526,9 @@ class PackagingRepository:
                     str(value.width_cm),
                     str(value.height_cm),
                     now,
+                    product_db_version,
+                    verified_at,
+                    operator_name,
                 ),
             )
             conn.executemany(
@@ -461,11 +557,25 @@ class PackagingRepository:
                 "UPDATE packaging_jobs SET updated_at = ? WHERE job_id = ?", (now, job_id)
             )
             self._audit(conn, operator_name, "CREATE", "BOX_GROUP", group_id, details=asdict(value))
+            if replaces_group_id:
+                self._audit(conn, operator_name, "CORRECT", "BOX_GROUP", replaces_group_id,
+                    reason=reason.strip(), details={"replacement_id": group_id, "value": asdict(value)})
+            if draft_key:
+                conn.execute("DELETE FROM drafts WHERE draft_key = ?", (draft_key,))
+            conn.execute("""INSERT INTO drafts VALUES ('active-job', ?, ?)
+                ON CONFLICT(draft_key) DO UPDATE SET payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at""", (json.dumps({"job_id": job_id}), now))
         return SavedBoxGroup(job_id, group_id, start, start + value.box_count - 1)
 
     def close_job(self, job_id: str, operator_name: str) -> None:
         now = utc_now_iso()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not operator_name.strip():
+                raise PackagingValidationError("작업자 이름 또는 사번을 입력하세요.")
+            for draft in conn.execute("SELECT payload_json FROM drafts WHERE draft_key <> 'active-job'"):
+                if json.loads(draft[0]).get("job_id") == job_id:
+                    raise PackagingValidationError("미완료 입력을 확정하거나 초기화한 뒤 완료하세요.")
             changed = conn.execute(
                 "UPDATE packaging_jobs SET status = 'COMPLETED', updated_at = ? WHERE job_id = ? AND status = 'OPEN'",
                 (now, job_id),
@@ -473,6 +583,9 @@ class PackagingRepository:
             if not changed:
                 raise PackagingValidationError("완료할 작업이 없습니다.")
             self._audit(conn, operator_name, "COMPLETE", "JOB", job_id)
+            active = conn.execute("SELECT payload_json FROM drafts WHERE draft_key = 'active-job'").fetchone()
+            if active and json.loads(active[0]).get("job_id") == job_id:
+                conn.execute("DELETE FROM drafts WHERE draft_key = 'active-job'")
 
     def save_draft(self, key: str, payload: dict) -> None:
         encoded = json.dumps(payload, ensure_ascii=False)
@@ -500,8 +613,10 @@ class PackagingRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT j.job_id, j.shipment_code, j.created_at, j.operator_name,
-                       j.product_db_version, j.app_version, j.status,
+                SELECT j.job_id, j.shipment_code, j.created_at,
+                       COALESCE(NULLIF(g.operator_name, ''), j.operator_name) AS operator_name,
+                       COALESCE(NULLIF(g.product_db_version, ''), j.product_db_version) AS product_db_version,
+                       j.app_version, j.status,
                        g.box_group_id, g.box_start_no,
                        g.box_count, g.weight_kg, g.length_cm, g.width_cm, g.height_cm,
                        g.created_at AS box_created_at,

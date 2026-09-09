@@ -18,8 +18,9 @@ from .errors import (
     DuplicateProductKeyError,
     InactiveProductError,
     ProductNotFoundError,
+    PackagingValidationError,
 )
-from .models import Product, utc_now_iso
+from .models import BoxItem, Product, utc_now_iso
 from .normalization import normalize_country_code, normalize_fnsku
 from .sources.base import ProductBatch
 
@@ -234,6 +235,26 @@ class ProductCacheRepository:
         if product.status.casefold() != "published":
             raise InactiveProductError("사용중지된 상품입니다. 포장할 수 없습니다.")
         return product
+
+    @contextmanager
+    def validated_items(self, items: tuple[BoxItem, ...]):
+        """Hold the snapshot lock through the caller's packaging commit.
+
+        A concurrent Sheet/Excel sync cannot activate a different snapshot between
+        validation and saving. Offline work validates against the active local DB.
+        """
+        with self._io_lock:
+            checked = []
+            for item in items:
+                product = self.lookup(item.fnsku, item.country_code)
+                current = BoxItem.from_product(product, item.qty_per_box)
+                fields = ("fnsku", "item_code", "sku", "country_code", "country_name", "product_name")
+                if any(getattr(item, field) != getattr(current, field) for field in fields):
+                    raise PackagingValidationError(
+                        f"{item.fnsku} 상품정보가 변경됐습니다. '구성품 정보 재확인' 후 다시 확정하세요."
+                    )
+                checked.append(current)
+            yield tuple(checked), self.info()
 
     def export_snapshot(self) -> tuple[CacheInfo, tuple[Product, ...]]:
         """지금 쓰고 있는 스냅샷의 요약과 상품 전체를 돌려준다.

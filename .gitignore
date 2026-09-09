@@ -10,4 +10,4 @@ config.json
 *.spec
 *.xlsx
 diagnostics-*.zip
-
+docs/USER_MANUAL.html

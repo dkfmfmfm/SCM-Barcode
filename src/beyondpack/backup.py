@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import platform
 import re
+import shutil
 import sqlite3
 import uuid
 from contextlib import closing
@@ -138,8 +140,19 @@ class PackagingBackup:
         try:
             target = self.target
             target.mkdir(parents=True, exist_ok=True)
-            self._copy_database(target)
+            self._copy_database(target, moment)
             rows = self._write_daily_csv(target, moment)
+            # A cancellation can concern yesterday's box. Refresh that day's
+            # export as well so an old CSV does not continue to count it.
+            refreshed = {moment.astimezone().date()}
+            oldest = moment.astimezone().date() - timedelta(days=self.settings.keep_days)
+            for revision in self.repository.revision_history():
+                original = json.loads(revision["snapshot_json"])["group"]
+                created = datetime.fromisoformat(original["created_at"])
+                day = created.astimezone().date()
+                if day not in refreshed and day >= oldest:
+                    self._write_daily_csv(target, created)
+                    refreshed.add(day)
             self._prune(target, moment)
         except (OSError, sqlite3.Error) as exc:
             return BackupResult(False, f"백업 실패: {exc}", stamp)
@@ -148,7 +161,7 @@ class PackagingBackup:
     def _temp_path(self, target: Path, suffix: str) -> Path:
         return target / f".beyondpack.{os.getpid()}.{uuid.uuid4().hex}{suffix}"
 
-    def _copy_database(self, target: Path) -> None:
+    def _copy_database(self, target: Path, moment: datetime) -> None:
         """SQLite 백업 API로 일관된 사본을 만든다.
 
         파일을 그대로 복사하면 WAL이 반영되지 않은 시점이 섞일 수 있다.
@@ -159,6 +172,17 @@ class PackagingBackup:
                 sqlite3.connect(f"file:{self.repository.path}?mode=ro", uri=True)
             ) as source, closing(sqlite3.connect(temp)) as destination:
                 source.backup(destination)
+                destination.execute("PRAGMA journal_mode=DELETE")
+                if destination.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise sqlite3.DatabaseError("백업 DB 무결성 검사 실패")
+            # Keep hourly recovery points as well as the latest copy.
+            hourly = target / f"packaging-{moment.astimezone():%Y%m%d-%H}.db"
+            generation = self._temp_path(target, ".db")
+            try:
+                shutil.copyfile(temp, generation)
+                os.replace(generation, hourly)
+            finally:
+                generation.unlink(missing_ok=True)
             os.replace(temp, target / DATABASE_NAME)
         finally:
             try:
@@ -189,6 +213,14 @@ class PackagingBackup:
     def _prune(self, target: Path, moment: datetime) -> None:
         """보관일수를 넘긴 일자별 CSV만 지운다. DB 사본은 지우지 않는다."""
         oldest = (moment.astimezone() - timedelta(days=self.settings.keep_days)).date()
+        copies = sorted(target.glob("packaging-????????-??.db"), reverse=True)
+        for path in copies[30:]:
+            try:
+                day = datetime.strptime(path.stem[len("packaging-"):], "%Y%m%d-%H").date()
+                if day < oldest:
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
         for path in target.glob(f"{CSV_PREFIX}*{CSV_SUFFIX}"):
             stamp = path.name[len(CSV_PREFIX) : -len(CSV_SUFFIX)]
             try:
@@ -328,13 +360,69 @@ class BackupRunner:
     ):
         self.records = PackagingBackup(repository, settings, station)
         self.master = ProductMasterBackup(cache, settings)
+        local = BackupSettings(directory=str(repository.path.parent / "backups"), keep_days=settings.keep_days)
+        self.local = PackagingBackup(repository, local, station)
+        self.settings = settings
 
     def run(self, now: datetime | None = None) -> BackupResult:
+        local = self.local.run(now)
+        if not self.settings.active:
+            return BackupResult(local.ok, f"로컬 {local.message} · 외부 백업 미설정", local.at, local.rows)
         records = self.records.run(now)
         master = self.master.run(now)
         return BackupResult(
-            records.ok and master.ok,
-            f"{records.message} · {master.message}",
+            local.ok and records.ok and master.ok,
+            f"로컬 {local.message} · {records.message} · {master.message}",
             records.at,
             records.rows,
         )
+
+
+def restore_packaging_backup(repository: PackagingRepository, source_path: Path, operator: str) -> Path:
+    """Validate first, preserve the live DB, then restore through SQLite's backup API.
+
+    The UI blocks concurrent sync/backup and asks the operator before calling this.
+    Restoring replaces all local packing records; it never merges two workstations.
+    """
+    if not operator.strip():
+        raise ValueError("복원 작업자 이름 또는 사번을 입력하세요.")
+    if not source_path.is_file() or source_path.resolve() == repository.path.resolve():
+        raise ValueError("현재 DB와 다른 백업 파일을 선택하세요.")
+    staging = repository.path.parent / f"restore-{uuid.uuid4().hex}.db"
+    safe_dir = repository.path.parent / "backups" / "before-restore"
+    safe_dir.mkdir(parents=True, exist_ok=True)
+    safety = safe_dir / f"packaging-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}.db"
+    required = {
+        "packaging_jobs": {"job_id", "created_at", "updated_at", "operator_name", "product_db_version", "app_version", "status"},
+        "box_groups": {"box_group_id", "job_id", "box_start_no", "box_count", "weight_kg", "length_cm", "width_cm", "height_cm", "created_at"},
+        "box_items": {"id", "box_group_id", "fnsku", "item_code", "sku", "country_code", "country_name", "product_name", "qty_per_box", "source_modified_at"},
+        "drafts": {"draft_key", "payload_json", "updated_at"},
+        "audit_events": {"id", "occurred_at", "operator_name", "action", "entity_type", "entity_id", "reason", "details_json"},
+    }
+    try:
+        with closing(sqlite3.connect(source_path.resolve().as_uri() + "?mode=ro", uri=True)) as source:
+            if source.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("백업 파일이 손상됐습니다.")
+            for table, fields in required.items():
+                if not fields.issubset({row[1] for row in source.execute(f"PRAGMA table_info({table})")}):
+                    raise ValueError("BeyondPack 포장 백업 형식이 아닙니다.")
+            if source.execute("PRAGMA foreign_key_check").fetchall():
+                raise ValueError("백업의 포장기록 연결이 올바르지 않습니다.")
+            with closing(sqlite3.connect(staging)) as target:
+                source.backup(target)
+        # Migrate the staging copy, not the user's original backup.
+        PackagingRepository(staging)
+        with closing(sqlite3.connect(repository.path)) as live, closing(sqlite3.connect(safety)) as safe:
+            live.backup(safe)
+            safe.execute("PRAGMA journal_mode=DELETE")
+            if safe.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("현재 기록의 안전 사본을 만들지 못했습니다. 복원을 중단합니다.")
+            with closing(sqlite3.connect(staging)) as source:
+                source.backup(live)
+        with repository._connect() as conn:
+            repository._audit(conn, operator, "RESTORE", "DATABASE", "packaging.db",
+                details={"source": source_path.name, "safety_copy": str(safety)})
+        return safety
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(staging) + suffix).unlink(missing_ok=True)

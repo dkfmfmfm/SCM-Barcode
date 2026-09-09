@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.2.11"
+  #define MyAppVersion "2.3.0"
 #endif
 
 #define MyAppName "BeyondPack"
@@ -41,6 +41,7 @@ Name: "desktopicon"; Description: "바탕화면에 BeyondPack 아이콘 만들�
 [Files]
 Source: "..\dist\portable\BeyondPack\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\docs\USER_MANUAL.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "..\docs\USER_MANUAL.html"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\docs\OPERATOR_GUIDE.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\docs\ADMIN_GUIDE.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\docs\GOOGLE_SHEETS_SETUP.md"; DestDir: "{app}\docs"; Flags: ignoreversion
@@ -49,6 +50,7 @@ Source: "..\templates\BeyondPack_Master_Template.csv"; DestDir: "{app}\templates
 
 [Icons]
 Name: "{autoprograms}\BeyondPack"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{autoprograms}\BeyondPack 사용 안내"; Filename: "{app}\docs\USER_MANUAL.html"
 Name: "{autodesktop}\BeyondPack"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]

@@ -117,10 +117,19 @@ def main(argv: list[str] | None = None) -> int:
                 build_source_factory(config, config_path),
                 auto_sync=False,
             )
+            # This path tests backup explicitly below; avoid an asynchronous
+            # shutdown backup being interrupted by the self-test's app.quit().
+            window._final_backup_requested = True
             window.show()
-            result = {"visible": False, "steppers": False}
+            result = {"visible": False, "steppers": False, "help": False}
 
             def finish_self_test() -> None:
+                from .help import HelpDialog
+                guide = HelpDialog(window)
+                guide.search.setText("확정")
+                guide.show_topic(guide.topics.currentItem())
+                result["help"] = guide.topics.count() > 0 and bool(guide.browser.toPlainText())
+                guide.deleteLater()
                 result["visible"] = window.isVisible() and "BeyondPack" in window.windowTitle()
                 qty_before = window.qty_input.value()
                 box_before = window.box_count.value()
@@ -144,10 +153,10 @@ def main(argv: list[str] | None = None) -> int:
             QTimer.singleShot(250, finish_self_test)
             QTimer.singleShot(5000, app.quit)
             app.exec()
-            if not result["visible"] or not result["steppers"]:
+            if not all(result.values()):
                 raise RuntimeError(
                     "GUI 창 또는 수량 증감 버튼 검사에 실패했습니다: "
-                    f"visible={result['visible']}, steppers={result['steppers']}"
+                    f"visible={result['visible']}, steppers={result['steppers']}, help={result['help']}"
                 )
             _self_test_note("GUI 통과")
             _self_test_labels(root / "labels.pdf")

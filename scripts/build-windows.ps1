@@ -20,6 +20,8 @@ if (-not (Test-Path ".venv")) {
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller pillow
 & .\.venv\Scripts\python.exe .\scripts\create-icon.py .\build-resources\BeyondPack.ico
+& .\.venv\Scripts\python.exe .\scripts\build-guide.py
+if ($LASTEXITCODE -ne 0) { throw "User guide generation failed." }
 
 $mode = if ($OneFile) { "onefile" } else { "portable" }
 $arguments = @(
@@ -30,6 +32,7 @@ $arguments = @(
     "--name", "BeyondPack",
     "--icon", "build-resources\BeyondPack.ico",
     "--add-data", "src\beyondpack\resources\sample-products.json;beyondpack\resources",
+    "--add-data", "docs\USER_MANUAL.md;beyondpack\resources\docs",
     "--paths", "src",
     "--distpath", "dist\$mode",
     "--workpath", "build\$mode"

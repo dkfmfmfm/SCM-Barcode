@@ -10,6 +10,8 @@ on:
       - "src/**"
       - "scripts/build-windows.ps1"
       - "scripts/create-icon.py"
+      - "scripts/build-guide.py"
+      - "tests/**"
       - "installer/**"
       - "templates/**"
       - "docs/RELEASE_*.md"
@@ -26,6 +28,8 @@ on:
       - "src/**"
       - "scripts/build-windows.ps1"
       - "scripts/create-icon.py"
+      - "scripts/build-guide.py"
+      - "tests/**"
       - "installer/**"
       - "templates/**"
       - "docs/RELEASE_*.md"
@@ -78,6 +82,16 @@ jobs:
         shell: pwsh
         run: .\scripts\build-windows.ps1
 
+      - name: Run Windows recovery and experience UI tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          .\.venv\Scripts\python.exe -c "from PySide6.QtWidgets import QApplication"
+          if ($LASTEXITCODE -ne 0) { throw "Qt runtime is required for recovery UI tests." }
+          .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*ui.py" -v
+          if ($LASTEXITCODE -ne 0) { throw "Recovery UI tests failed." }
+
       - name: Build single-file executable
         shell: pwsh
         run: .\scripts\build-windows.ps1 -OneFile
@@ -123,6 +137,8 @@ jobs:
           Copy-Item ".\docs\ADMIN_GUIDE.md" -Destination $packageDir
           Copy-Item ".\docs\GOOGLE_SHEETS_SETUP.md" -Destination $packageDir
           Copy-Item ".\docs\USER_MANUAL.md" -Destination $packageDir
+          Copy-Item ".\docs\USER_MANUAL.html" -Destination $packageDir
+          Copy-Item ".\docs\USER_MANUAL.html" -Destination (Join-Path $releaseDir "BeyondPack-$env:RELEASE_VERSION-User-Guide.html")
           Copy-Item ".\docs\FIELD_CHECKLIST.md" -Destination $packageDir
           Copy-Item ".\templates\BeyondPack_Master_Template.csv" -Destination $packageDir
 
@@ -158,7 +174,8 @@ jobs:
             throw "Installer was not created: $setupExe"
           }
           $checksumPath = Join-Path $releaseDir "SHA256SUMS.txt"
-          @($setupExe, $singleExe, $portableZip) | ForEach-Object {
+          $guide = Join-Path $releaseDir "BeyondPack-$env:RELEASE_VERSION-User-Guide.html"
+          @($setupExe, $singleExe, $portableZip, $guide) | ForEach-Object {
             $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_
             "$($hash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($_))"
           } | Set-Content -LiteralPath $checksumPath -Encoding ascii
@@ -171,11 +188,12 @@ jobs:
             release/BeyondPack-${{ env.RELEASE_VERSION }}-Windows-x64.exe
             release/BeyondPack-${{ env.RELEASE_VERSION }}-Windows-x64-Setup.exe
             release/BeyondPack-${{ env.RELEASE_VERSION }}-Windows-x64-portable.zip
+            release/BeyondPack-${{ env.RELEASE_VERSION }}-User-Guide.html
             release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create or update GitHub pre-release
+      - name: Publish GitHub release
         if: github.event_name != 'pull_request'
         shell: pwsh
         env:
@@ -189,22 +207,23 @@ jobs:
             ".\release\BeyondPack-$env:RELEASE_VERSION-Windows-x64-Setup.exe",
             ".\release\BeyondPack-$env:RELEASE_VERSION-Windows-x64.exe",
             ".\release\BeyondPack-$env:RELEASE_VERSION-Windows-x64-portable.zip",
+            ".\release\BeyondPack-$env:RELEASE_VERSION-User-Guide.html",
             ".\release\SHA256SUMS.txt"
           )
           gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh api --method PATCH `
-              "repos/$env:GITHUB_REPOSITORY/git/refs/tags/$env:RELEASE_TAG" `
-              -f sha="$env:GITHUB_SHA" `
-              -F force=true
+            $publishedSha = gh api "repos/$env:GITHUB_REPOSITORY/git/refs/tags/$env:RELEASE_TAG" --jq '.object.sha'
             if ($LASTEXITCODE -ne 0) {
-              throw "Could not move $env:RELEASE_TAG to $env:GITHUB_SHA"
+              throw "Could not verify the existing release tag."
+            }
+            if ($publishedSha -ne $env:GITHUB_SHA) {
+              throw "Release tag already belongs to another commit. Increment the version before publishing."
             }
             gh release edit $env:RELEASE_TAG `
               --target $env:GITHUB_SHA `
               --title "BeyondPack $env:RELEASE_VERSION" `
               --notes-file $notesFile `
-              --prerelease `
+              --prerelease=false --latest `
               --repo $env:GITHUB_REPOSITORY
             gh release upload $env:RELEASE_TAG @assets --clobber --repo $env:GITHUB_REPOSITORY
           } else {
@@ -212,6 +231,6 @@ jobs:
               --target $env:GITHUB_SHA `
               --title "BeyondPack $env:RELEASE_VERSION" `
               --notes-file $notesFile `
-              --prerelease `
+              --latest `
               --repo $env:GITHUB_REPOSITORY
           }
