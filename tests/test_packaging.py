@@ -156,9 +156,10 @@ class PackagingTests(unittest.TestCase):
         self.repo.save_box_group(job, self._group(3), "반장")
         second = self.repo.save_box_group(job, self._group(2), "반장")
         self.assertEqual(self.repo.next_box_number("1B"), 6)
-        group, items = self.repo.take_back_box_group(
+        group, items, moved = self.repo.take_back_box_group(
             second.box_group_id, "반장", "무게 오입력"
         )
+        self.assertEqual(moved, [])
         self.assertEqual(int(group["box_start_no"]), 4)
         self.assertEqual(len(items), 1)
         self.assertEqual(self.repo.next_box_number("1B"), 4)
@@ -167,13 +168,38 @@ class PackagingTests(unittest.TestCase):
         again = self.repo.save_box_group(job, self._group(2), "반장")
         self.assertEqual((again.box_start_no, again.box_end_no), (4, 5))
 
-    def test_a_middle_box_group_cannot_be_taken_back(self):
-        job = self.repo.create_job("반장", "V1", "2.2.9", "1B")
+    def test_deleting_a_middle_box_group_pulls_the_following_numbers_in(self):
+        # 번호에 구멍을 내지 않는다. 대신 밀린 박스를 재부착 목록으로 돌려준다.
+        job = self.repo.create_job("반장", "V1", "2.3.1", "1B")
         first = self.repo.save_box_group(job, self._group(3), "반장")
         self.repo.save_box_group(job, self._group(2), "반장")
-        with self.assertRaises(PackagingValidationError):
-            self.repo.take_back_box_group(first.box_group_id, "반장", "오입력")
-        self.assertEqual(len(self.repo.shipment_groups("1B")), 2)
+        self.repo.save_box_group(job, self._group(4), "반장")
+        preview = self.repo.renumber_preview(first.box_group_id)
+        self.assertEqual(
+            [(m["old_start_no"], m["new_start_no"]) for m in preview], [(4, 1), (6, 3)]
+        )
+        _group, _items, moved = self.repo.take_back_box_group(
+            first.box_group_id, "반장", "중복 등록"
+        )
+        self.assertEqual(moved, preview)
+        self.assertEqual(sum(m["box_count"] for m in moved), 6)
+        groups = self.repo.shipment_groups("1B")
+        self.assertEqual(
+            [(g["box_start_no"], g["box_count"]) for g in groups], [(1, 2), (3, 4)]
+        )
+        self.assertEqual(self.repo.next_box_number("1B"), 7)
+
+    def test_renumber_preview_does_not_change_anything(self):
+        job = self.repo.create_job("반장", "V1", "2.3.1", "1B")
+        first = self.repo.save_box_group(job, self._group(3), "반장")
+        self.repo.save_box_group(job, self._group(2), "반장")
+        self.repo.renumber_preview(first.box_group_id)
+        self.repo.renumber_preview(first.box_group_id, 9)
+        groups = self.repo.shipment_groups("1B")
+        self.assertEqual(
+            [(g["box_start_no"], g["box_count"]) for g in groups], [(1, 3), (4, 2)]
+        )
+        self.assertEqual(self.repo.renumber_preview("없는-아이디"), [])
 
     def test_the_last_box_group_of_another_shipment_is_still_the_last(self):
         first = self.repo.create_job("반장", "V1", "2.2.9", "1B")

@@ -76,11 +76,24 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.repo.load_draft("active-job")["job_id"], self.job)
 
     def test_correction_of_a_stale_selection_preserves_all_records(self):
+        # 중간 박스 정정은 허용하지만, 이미 교체돼 사라진 id로는 막아야 한다.
+        # 정정하면 새 box_group_id가 생기므로 옛 id는 더 이상 유효하지 않다.
         old = self.save()
         self.save()
+        corrected = self.save(replaces_group_id=old.box_group_id, reason="정정")
+        self.assertNotEqual(corrected.box_group_id, old.box_group_id)
         with self.assertRaises(PackagingValidationError):
-            self.save(replaces_group_id=old.box_group_id, reason="정정")
+            self.save(replaces_group_id=old.box_group_id, reason="다시 정정")
         self.assertEqual(len(self.repo.shipment_groups("SHIP-1")), 2)
+
+    def test_correcting_a_middle_box_keeps_its_number(self):
+        first = self.save()
+        self.save()
+        corrected = self.save(replaces_group_id=first.box_group_id, reason="무게 정정")
+        self.assertEqual(corrected.box_start_no, first.box_start_no)
+        self.assertEqual(corrected.renumbered, ())
+        starts = [g["box_start_no"] for g in self.repo.shipment_groups("SHIP-1")]
+        self.assertEqual(starts, sorted(starts))
 
     def test_job_search_resume_complete_and_reopen_database(self):
         self.save()

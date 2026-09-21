@@ -357,6 +357,7 @@ class MainWindow(QMainWindow):
         self.job_shipment = ""
         self.edit_group_id = ""
         self.edit_reason = ""
+        self.edit_box_count = 0
         self._restoring_input = False
         self.last_saved: tuple[dict, list[dict]] | None = None
         self.sync_thread: QThread | None = None
@@ -377,6 +378,8 @@ class MainWindow(QMainWindow):
         self._restore_draft()
         self._refresh_next_box_label()
         self._refresh_shipment_view()
+        # 번호가 밀린 박스를 아직 다시 붙이지 않았다면 재시작해도 안내가 남는다.
+        self._refresh_relabel_banner()
         self._show_initial_cache_state()
         self._start_backup_schedule()
         if auto_sync:
@@ -635,6 +638,28 @@ class MainWindow(QMainWindow):
             action_row.addWidget(button)
         progress_layout.addLayout(action_row)
         self.work_tabs.addTab(progress_page, "출고 현황")
+        # 재부착 안내는 탭 위에 둔다. 구성품 탭에서 작업하는 동안에도 보여야
+        # 번호가 밀린 상자를 다시 붙이는 일을 잊지 않는다.
+        self.relabel_banner = WordLabel()
+        self.relabel_banner.setObjectName("relabelBanner")
+        self.relabel_banner.setContentsMargins(10, 8, 10, 8)
+        self.relabel_banner.setStyleSheet(
+            "background:#FFF4E5; color:#8A4B00; border:1px solid #F0C48A;"
+            "border-radius:6px; font-weight:700;"
+        )
+        self.relabel_banner.setVisible(False)
+        self.relabel_print_button = QPushButton("재부착 라벨 출력")
+        self.relabel_print_button.setVisible(False)
+        self.relabel_print_button.clicked.connect(self.print_relabel_batch)
+        self.relabel_done_button = QPushButton("재부착 완료")
+        self.relabel_done_button.setVisible(False)
+        self.relabel_done_button.clicked.connect(self.finish_relabel)
+        relabel_row = QHBoxLayout()
+        relabel_row.addWidget(self.relabel_print_button)
+        relabel_row.addWidget(self.relabel_done_button)
+        relabel_row.addStretch()
+        left.addWidget(self.relabel_banner)
+        left.addLayout(relabel_row)
         left.addWidget(self.work_tabs, 1)
 
         package_group = QGroupBox("03  포장 규격")
@@ -818,6 +843,14 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Wheel and not watched.hasFocus():
             event.ignore()
             return True
+        if event.type() == QEvent.FocusIn and isinstance(watched, QAbstractSpinBox):
+            # 마우스로 누르면 Qt가 누른 자리에 커서를 놓는다. 빈칸이나 0이 남은
+            # 칸이면 친 숫자가 기존 글자 **앞에** 끼어들어, 박스수량에 10을 치면
+            # 01(=1개)이 되고 무게 0.000에 10을 치면 100.000이 됐다.
+            # 커서 배치가 이 이벤트 뒤에 일어나므로 한 박자 늦춰 전체를 선택한다.
+            # 이미 포커스가 있는 칸을 다시 누르면 FocusIn이 오지 않으므로,
+            # 자릿수 하나만 고치는 조작은 그대로 된다.
+            QTimer.singleShot(0, watched, watched.selectAll)
         if (hasattr(self, "qty_input") and watched is self.qty_input.lineEdit()
                 and event.type() == QEvent.KeyPress
                 and event.key() in (Qt.Key_Return, Qt.Key_Enter)
@@ -1600,22 +1633,141 @@ class MainWindow(QMainWindow):
     def _progress_selection_changed(self) -> None:
         row = self.progress_table.currentRow()
         selected = row >= 0
-        # 마지막 박스만 되돌릴 수 있다. 중간 박스를 지우면 이미 붙인 라벨의
-        # 번호와 이후 번호가 어긋나 실물과 기록을 맞출 수 없다.
+        # 중간 박스도 정정·취소할 수 있다. 번호를 당겨 1..N을 유지하고, 번호가
+        # 밀린 박스는 재부착 목록으로 안내한다.
+        editable = False
         is_last = selected and row == self.progress_table.rowCount() - 1
-        if is_last:
+        if selected:
             saved = self.packaging.box_group(self._selected_box_group_id())
             job = self.packaging.job(saved[0]["job_id"]) if saved else None
-            is_last = bool(job and job["status"] == "OPEN")
+            editable = bool(job and job["status"] == "OPEN")
         self.reprint_selected_button.setEnabled(selected)
         for button in (self.amend_selected_button, self.delete_selected_button):
-            button.setEnabled(is_last)
+            button.setEnabled(editable)
             button.setToolTip(
                 ""
-                if is_last
-                else "출고건의 마지막 박스만 수정·삭제할 수 있습니다. "
-                "중간 박스를 지우면 이후 박스번호가 어긋납니다."
+                if is_last or not editable
+                else "중간 박스입니다. 고치면 뒤따르는 박스번호가 당겨지고 "
+                "그 박스들의 라벨을 다시 붙여야 합니다."
             )
+
+    # ---- 번호가 밀린 박스 재부착 ------------------------------------------
+
+    RELABEL_KEY = "relabel"
+
+    def _relabel_pending(self) -> dict:
+        return self.packaging.load_draft(self.RELABEL_KEY) or {}
+
+    def _register_relabel(self, moved: list[dict] | tuple[dict, ...]) -> None:
+        """번호가 밀린 박스를 재부착 목록에 올린다.
+
+        번호를 당기면 기록은 맞지만 상자에 붙어 있는 라벨은 옛 번호 그대로다.
+        작업자가 어느 상자를 다시 붙여야 하는지 잊지 않도록, 끝났다고 누를
+        때까지 화면에 남긴다. 프로그램을 껐다 켜도 남아야 하므로 DB에 둔다.
+        """
+        if not moved:
+            return
+        pending = self._relabel_pending()
+        entries = list(pending.get("entries") or [])
+        known = {entry.get("box_group_id") for entry in entries}
+        for entry in moved:
+            if entry["box_group_id"] in known:
+                # 같은 박스가 또 밀렸다면 최종 번호만 갱신한다.
+                for existing in entries:
+                    if existing.get("box_group_id") == entry["box_group_id"]:
+                        existing["new_start_no"] = entry["new_start_no"]
+                        existing["new_end_no"] = entry["new_end_no"]
+                continue
+            entries.append(dict(entry))
+            known.add(entry["box_group_id"])
+        self.packaging.save_draft(
+            self.RELABEL_KEY,
+            {"shipment_code": self._shipment_code(), "entries": entries},
+        )
+        self._refresh_relabel_banner()
+
+    def _refresh_relabel_banner(self) -> None:
+        pending = self._relabel_pending()
+        entries = pending.get("entries") or []
+        if not entries:
+            self.relabel_banner.setVisible(False)
+            self.relabel_print_button.setVisible(False)
+            self.relabel_done_button.setVisible(False)
+            return
+        boxes = sum(int(entry.get("box_count") or 0) for entry in entries)
+        spans = ", ".join(
+            f"#{entry['new_start_no']}"
+            if entry["new_start_no"] == entry["new_end_no"]
+            else f"#{entry['new_start_no']}~#{entry['new_end_no']}"
+            for entry in sorted(entries, key=lambda e: e["new_start_no"])
+        )
+        self.relabel_banner.setText(
+            f"재부착 필요 {boxes}박스 — 새 번호 {spans}. "
+            "해당 상자의 옛 라벨을 떼고 새 라벨을 붙이세요."
+        )
+        self.relabel_banner.setVisible(True)
+        self.relabel_print_button.setVisible(True)
+        self.relabel_done_button.setVisible(True)
+
+    @Slot()
+    def print_relabel_batch(self) -> None:
+        """재부착 대상 박스의 라벨을 새 번호로 한 번에 출력한다."""
+        entries = self._relabel_pending().get("entries") or []
+        if not entries:
+            return
+        printed = 0
+        for entry in sorted(entries, key=lambda e: e["new_start_no"]):
+            saved = self.packaging.box_group(str(entry["box_group_id"]))
+            if not saved:
+                continue
+            group, items = saved
+            if self._print_box_labels(group, items, ask=False):
+                printed += int(group["box_count"])
+        if printed:
+            self._success(
+                f"재부착 라벨 {printed}장을 출력했습니다. 옛 라벨을 떼고 붙인 뒤 "
+                "'재부착 완료'를 누르세요."
+            )
+        else:
+            self._error("재부착 라벨을 출력하지 못했습니다. 프린터를 확인하세요. [BP-PRINT-003]")
+        self._focus_scan_input()
+
+    @Slot()
+    def finish_relabel(self) -> None:
+        entries = self._relabel_pending().get("entries") or []
+        boxes = sum(int(entry.get("box_count") or 0) for entry in entries)
+        if boxes and QMessageBox.question(
+            self,
+            "재부착 완료",
+            f"{boxes}박스의 라벨을 모두 새 번호로 바꿔 붙였습니까?\n"
+            "확인을 누르면 안내가 사라집니다.",
+        ) != QMessageBox.Yes:
+            return
+        self.packaging.clear_draft(self.RELABEL_KEY)
+        self._refresh_relabel_banner()
+        self._success("재부착을 완료로 표시했습니다.")
+
+    def _confirm_renumber(self, moved: list[dict], what: str) -> bool:
+        """번호가 밀리는 비용을 확정 전에 보여 주고 동의를 받는다."""
+        if not moved:
+            return True
+        boxes = sum(int(entry["box_count"]) for entry in moved)
+        spans = ", ".join(
+            f"#{entry['old_start_no']}~#{entry['old_end_no']} → "
+            f"#{entry['new_start_no']}~#{entry['new_end_no']}"
+            for entry in moved[:6]
+        )
+        more = "" if len(moved) <= 6 else f" 외 {len(moved) - 6}묶음"
+        return QMessageBox.question(
+            self,
+            "박스번호 당김 확인",
+            f"{what}하면 뒤따르는 <b>{boxes}박스</b>의 번호가 당겨집니다.<br><br>"
+            f"{spans}{more}<br><br>"
+            f"<b>그 {boxes}박스의 라벨을 모두 다시 붙여야 합니다.</b> "
+            "상자가 아직 손이 닿는 곳에 있는지 확인하세요. "
+            "이미 실었거나 패킹리스트를 넘긴 뒤라면 번호가 서류와 어긋납니다.<br><br>"
+            "계속할까요?",
+        ) == QMessageBox.Yes
 
     def _selected_box_group_id(self) -> str:
         row = self.progress_table.currentRow()
@@ -1655,6 +1807,9 @@ class MainWindow(QMainWindow):
             self._error("취소할 박스 행을 선택하세요. [BP-PACK-002]", beep=False)
             return
         group, _items = saved
+        moved = self.packaging.renumber_preview(box_group_id)
+        if not self._confirm_renumber(moved, "이 박스의 확정을 취소"):
+            return
         reason = self._take_back_reason("선택 박스 확정 취소", group)
         if not reason:
             return
@@ -1675,13 +1830,15 @@ class MainWindow(QMainWindow):
         if not reason:
             return
         job = self.packaging.job(group["job_id"])
-        if not job or job["status"] != "OPEN" or not self.packaging.is_last_box_group(box_group_id):
-            self._error("진행 중인 작업의 마지막 박스만 정정할 수 있습니다.")
+        if not job or job["status"] != "OPEN":
+            self._error("진행 중인 작업의 박스만 정정할 수 있습니다.")
             return
         self.job_id = group["job_id"]
         self.job_shipment = group["shipment_code"]
         self.edit_group_id = box_group_id
         self.edit_reason = reason
+        # 박스수량을 바꾸면 뒤 번호가 밀린다. 확정할 때 비교하려고 기억해 둔다.
+        self.edit_box_count = int(group["box_count"])
         items = _items
         self.items = [
             BoxItem(
@@ -1722,7 +1879,7 @@ class MainWindow(QMainWindow):
             self._error("작업자 이름 또는 사번을 입력하세요. [BP-PACK-001]")
             return None
         try:
-            group, items = self.packaging.take_back_box_group(
+            group, items, moved = self.packaging.take_back_box_group(
                 box_group_id, operator_name, reason, action
             )
         except BeyondPackError as exc:
@@ -1730,6 +1887,7 @@ class MainWindow(QMainWindow):
             return None
         # 되돌린 박스가 F8 대상이면 대상을 다시 잡는다.
         self.last_saved = self.packaging.last_group(self.job_id) if self.job_id else None
+        self._register_relabel(moved)
         self._refresh_next_box_label()
         self._refresh_shipment_view()
         self.backup_after_confirm.start()
@@ -1737,8 +1895,14 @@ class MainWindow(QMainWindow):
             start = int(group["box_start_no"])
             count = int(group["box_count"])
             span = f"#{start}" if count == 1 else f"#{start}~#{start + count - 1}"
+            tail = (
+                f"뒤 {sum(m['box_count'] for m in moved)}박스의 번호가 당겨졌습니다. "
+                "아래 재부착 안내를 따르세요."
+                if moved
+                else f"다음 박스는 #{start}입니다."
+            )
             self._success(
-                f"박스 {span}의 확정을 취소했습니다. 원본은 이력에 보존됩니다. 다음 박스는 #{start}입니다. "
+                f"박스 {span}의 확정을 취소했습니다. 원본은 이력에 보존됩니다. {tail} "
                 "이미 출력한 라벨은 폐기하세요."
             )
         return group, items
@@ -1803,6 +1967,12 @@ class MainWindow(QMainWindow):
                 height_cm=positive_decimal(self.height.value(), "높이", Decimal(str(self.config.dimension_max_cm))),
                 items=tuple(self.items),
             )
+            if self.edit_group_id and value.box_count != self.edit_box_count:
+                preview = self.packaging.renumber_preview(
+                    self.edit_group_id, value.box_count
+                )
+                if not self._confirm_renumber(preview, "박스수량을 바꿔 저장"):
+                    return
             with self.cache.validated_items(value.items) as (checked, info):
                 if not self.job_id or self.job_shipment != shipment_code:
                     self.job_id = self.packaging.create_job(
@@ -1820,8 +1990,11 @@ class MainWindow(QMainWindow):
             self._error(f"{exc} [{exc.code}]")
             self._focus_first_incomplete()
             return
+        amended = bool(self.edit_group_id)
         self.edit_group_id = ""
         self.edit_reason = ""
+        self.edit_box_count = 0
+        self._register_relabel(saved.renumbered)
         self.items.clear()
         self._refresh_items_table()
         self._clear_scan(keep_message=True)
@@ -1840,10 +2013,24 @@ class MainWindow(QMainWindow):
         self._refresh_shipment_view()
         self.backup_after_confirm.start()
         self.work_tabs.setCurrentIndex(1)
-        self._success(
-            f"박스 #{saved.box_start_no}~#{saved.box_end_no} 저장 완료. "
-            + (printed if printed else "F8로 라벨을 출력하거나 다음 작업을 스캔하세요.")
+        span = (
+            f"#{saved.box_start_no}"
+            if saved.box_start_no == saved.box_end_no
+            else f"#{saved.box_start_no}~#{saved.box_end_no}"
         )
+        if amended:
+            tail = printed or "현황 탭에서 이 박스를 골라 라벨을 재출력하세요."
+            if saved.renumbered:
+                tail += (
+                    f" 뒤 {sum(m['box_count'] for m in saved.renumbered)}박스의 번호가 "
+                    "당겨졌습니다. 아래 재부착 안내를 따르세요."
+                )
+            self._success(f"박스 {span} 정정 저장. 박스번호는 그대로입니다. {tail}")
+        else:
+            self._success(
+                f"박스 {span} 저장 완료. "
+                + (printed if printed else "F8로 라벨을 출력하거나 다음 작업을 스캔하세요.")
+            )
         self._focus_scan_input()
 
     @Slot()
@@ -1853,6 +2040,7 @@ class MainWindow(QMainWindow):
                 return
         self.edit_group_id = ""
         self.edit_reason = ""
+        self.edit_box_count = 0
         self.items.clear()
         self._refresh_items_table()
         self._clear_scan(keep_message=True)

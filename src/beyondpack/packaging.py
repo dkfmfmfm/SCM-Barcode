@@ -19,6 +19,9 @@ class SavedBoxGroup:
     box_group_id: str
     box_start_no: int
     box_end_no: int
+    # 정정으로 번호가 밀린 뒤 박스들. 이미 붙여 둔 라벨과 달라지므로 화면이
+    # 재부착 대상을 집어 주는 데 쓴다. 새 박스 확정에서는 항상 비어 있다.
+    renumbered: tuple[dict, ...] = ()
 
 
 class PackagingRepository:
@@ -347,12 +350,17 @@ class PackagingRepository:
 
     def take_back_box_group(
         self, box_group_id: str, operator_name: str, reason: str, action: str = "DELETE"
-    ) -> tuple[dict, list[dict]]:
-        """확정한 박스 묶음을 되돌린다. 지운 내용을 함께 돌려준다.
+    ) -> tuple[dict, list[dict], list[dict]]:
+        """확정한 박스 묶음을 지운다. 지운 내용과 번호가 밀린 묶음을 돌려준다.
 
-        출고건의 **마지막 묶음만** 되돌릴 수 있다. 중간 묶음을 지우면 이미
-        출력된 라벨의 박스번호와 이후 번호가 어긋나 실물과 기록을 맞출 수
-        없게 된다. 되돌린 뒤에는 그 번호부터 다시 발번된다.
+        마지막 묶음이면 그 번호부터 다시 발번된다. 중간 묶음이면 뒤따르는
+        묶음의 번호를 당겨 1번부터 빈틈없이 이어지게 한다. 번호를 당긴 묶음은
+        이미 붙여 둔 라벨과 달라지므로 **라벨을 다시 붙여야 한다.** 어떤
+        박스가 대상인지 세 번째 반환값으로 돌려준다.
+
+        번호에 구멍을 내지 않는 쪽을 택한 이유는 포장실적과 패킹리스트가
+        1..N으로 이어져야 하기 때문이다. 대신 재부착 비용이 생기므로, 화면은
+        확정 전에 몇 박스가 대상인지 먼저 보여 준다(`renumber_preview`).
         """
         cleaned = reason.strip()
         if not cleaned:
@@ -375,11 +383,6 @@ class PackagingRepository:
             status = conn.execute("SELECT status FROM packaging_jobs WHERE job_id = ?", (group["job_id"],)).fetchone()[0]
             if status != "OPEN":
                 raise PackagingValidationError("완료된 작업은 수정·취소할 수 없습니다.")
-            if self._last_box_group_id(conn, box_group_id) != box_group_id:
-                raise PackagingValidationError(
-                    "출고건의 마지막 박스만 수정·삭제할 수 있습니다. "
-                    "중간 박스를 지우면 이후 박스번호가 어긋납니다."
-                )
             items = [
                 dict(row)
                 for row in conn.execute(
@@ -391,6 +394,12 @@ class PackagingRepository:
             self._archive_group(conn, saved, items, "CANCELLED", operator_name, cleaned)
             conn.execute("DELETE FROM box_items WHERE box_group_id = ?", (box_group_id,))
             conn.execute("DELETE FROM box_groups WHERE box_group_id = ?", (box_group_id,))
+            moved = self._shift_following(
+                conn,
+                str(saved["shipment_code"]),
+                int(saved["box_start_no"]),
+                -int(saved["box_count"]),
+            )
             conn.execute(
                 "UPDATE packaging_jobs SET updated_at = ? WHERE job_id = ?",
                 (utc_now_iso(), saved["job_id"]),
@@ -405,9 +414,99 @@ class PackagingRepository:
                 details={
                     "group": saved,
                     "items": items,
+                    "renumbered": moved,
                 },
             )
-        return saved, items
+        return saved, items, moved
+
+    @staticmethod
+    def _following_groups(
+        conn: sqlite3.Connection, shipment_code: str, after_start_no: int
+    ) -> list[dict]:
+        """같은 출고건에서 이 번호보다 뒤에 오는 묶음을 순서대로 돌려준다."""
+        return [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT g.box_group_id, g.box_start_no, g.box_count
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                WHERE j.shipment_code = ? AND g.box_start_no > ?
+                ORDER BY g.box_start_no
+                """,
+                (shipment_code, int(after_start_no)),
+            ).fetchall()
+        ]
+
+    @staticmethod
+    def _moved(row: dict, delta: int) -> dict:
+        old = int(row["box_start_no"])
+        count = int(row["box_count"])
+        return {
+            "box_group_id": str(row["box_group_id"]),
+            "box_count": count,
+            "old_start_no": old,
+            "old_end_no": old + count - 1,
+            "new_start_no": old + delta,
+            "new_end_no": old + delta + count - 1,
+        }
+
+    def _shift_following(
+        self,
+        conn: sqlite3.Connection,
+        shipment_code: str,
+        after_start_no: int,
+        delta: int,
+    ) -> list[dict]:
+        """뒤따르는 묶음의 박스번호를 `delta`만큼 밀어 번호를 다시 이어 붙인다.
+
+        번호가 밀린 묶음은 이미 붙여 둔 라벨과 달라진다. 어떤 묶음이 어디서
+        어디로 갔는지 돌려주어, 화면이 재부착할 박스를 정확히 집어 줄 수 있게
+        한다.
+        """
+        if not delta:
+            return []
+        moved = [
+            self._moved(row, delta)
+            for row in self._following_groups(conn, shipment_code, after_start_no)
+        ]
+        for entry in moved:
+            conn.execute(
+                "UPDATE box_groups SET box_start_no = ? WHERE box_group_id = ?",
+                (entry["new_start_no"], entry["box_group_id"]),
+            )
+        return moved
+
+    def renumber_preview(
+        self, box_group_id: str, new_box_count: int | None = None
+    ) -> list[dict]:
+        """지우거나 수량을 바꾸면 번호가 밀릴 묶음을 미리 돌려준다. 쓰지 않는다.
+
+        "이후 N박스의 라벨을 다시 붙여야 합니다"를 확정 **전에** 보여 주려면
+        먼저 알아야 한다. `new_box_count`가 없으면 삭제로 간주한다.
+        """
+        with self._connect() as conn:
+            group = conn.execute(
+                """
+                SELECT g.box_start_no, g.box_count, j.shipment_code
+                FROM box_groups g
+                JOIN packaging_jobs j ON j.job_id = g.job_id
+                WHERE g.box_group_id = ?
+                """,
+                (box_group_id,),
+            ).fetchone()
+            if group is None:
+                return []
+            count = int(group["box_count"])
+            delta = -count if new_box_count is None else int(new_box_count) - count
+            if not delta:
+                return []
+            return [
+                self._moved(row, delta)
+                for row in self._following_groups(
+                    conn, str(group["shipment_code"]), int(group["box_start_no"])
+                )
+            ]
 
     @staticmethod
     def _archive_group(conn, group, items, state, operator, reason, replacement_id=""):
@@ -496,19 +595,29 @@ class PackagingRepository:
             ).fetchone()
             if job is None or job["status"] != "OPEN":
                 raise PackagingValidationError("저장 가능한 작업이 아닙니다.")
+            renumbered: list[dict] = []
             if replaces_group_id:
                 if not reason.strip():
                     raise PackagingValidationError("정정 사유를 입력하세요.")
                 original = conn.execute("SELECT * FROM box_groups WHERE box_group_id = ? AND job_id = ?",
                     (replaces_group_id, job_id)).fetchone()
-                if original is None or self._last_box_group_id(conn, replaces_group_id) != replaces_group_id:
-                    raise PackagingValidationError("정정 대상이 변경됐습니다. 마지막 박스를 다시 선택하세요.")
+                if original is None:
+                    raise PackagingValidationError("정정 대상이 변경됐습니다. 박스를 다시 선택하세요.")
                 old_items = [dict(row) for row in conn.execute(
                     "SELECT * FROM box_items WHERE box_group_id = ? ORDER BY id", (replaces_group_id,))]
                 self._archive_group(conn, dict(original), old_items, "CORRECTED", operator_name, reason.strip(), group_id)
                 conn.execute("DELETE FROM box_items WHERE box_group_id = ?", (replaces_group_id,))
                 conn.execute("DELETE FROM box_groups WHERE box_group_id = ?", (replaces_group_id,))
-            start = self._next_box_number(conn, str(job["shipment_code"]))
+                # 정정본은 원본의 박스번호를 그대로 물려받는다. 새 번호를
+                # 받으면 이미 붙여 둔 라벨과 어긋나기 때문이다. 수량이 달라진
+                # 만큼만 뒤따르는 묶음을 밀어 1..N이 빈틈없이 이어지게 한다.
+                start = int(original["box_start_no"])
+                renumbered = self._shift_following(
+                    conn, str(job["shipment_code"]), start,
+                    value.box_count - int(original["box_count"]),
+                )
+            else:
+                start = self._next_box_number(conn, str(job["shipment_code"]))
             conn.execute(
                 """
                 INSERT INTO box_groups(box_group_id, job_id, box_start_no, box_count,
@@ -559,13 +668,16 @@ class PackagingRepository:
             self._audit(conn, operator_name, "CREATE", "BOX_GROUP", group_id, details=asdict(value))
             if replaces_group_id:
                 self._audit(conn, operator_name, "CORRECT", "BOX_GROUP", replaces_group_id,
-                    reason=reason.strip(), details={"replacement_id": group_id, "value": asdict(value)})
+                    reason=reason.strip(), details={"replacement_id": group_id,
+                        "value": asdict(value), "renumbered": renumbered})
             if draft_key:
                 conn.execute("DELETE FROM drafts WHERE draft_key = ?", (draft_key,))
             conn.execute("""INSERT INTO drafts VALUES ('active-job', ?, ?)
                 ON CONFLICT(draft_key) DO UPDATE SET payload_json=excluded.payload_json,
                 updated_at=excluded.updated_at""", (json.dumps({"job_id": job_id}), now))
-        return SavedBoxGroup(job_id, group_id, start, start + value.box_count - 1)
+        return SavedBoxGroup(
+            job_id, group_id, start, start + value.box_count - 1, tuple(renumbered)
+        )
 
     def close_job(self, job_id: str, operator_name: str) -> None:
         now = utc_now_iso()
