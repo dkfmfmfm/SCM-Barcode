@@ -48,6 +48,21 @@
 
 **상자가 아직 손에 닿을 때만 진행한다**, **이미 실었으면 관리자에게 알린다**를 눈에 띄게 적었습니다.
 
+## 릴리즈 빌드가 서로를 취소하던 문제
+
+`release-windows` 워크플로가 **PR 검증 빌드와 main 배포 빌드를 같은 동시성 그룹**에 두고 `cancel-in-progress: true`를 걸고 있었습니다. PR을 하나 올리면 진행 중이던 배포 빌드가 취소됩니다.
+
+실제로 **v2.3.2 배포 빌드가 이렇게 취소되어 릴리즈 파일이 만들어지지 않았습니다.** 머지는 됐는데 설치파일이 없는 상태였습니다.
+
+이벤트와 ref로 그룹을 나누고, 취소는 PR 빌드에서만 하도록 바꿨습니다.
+
+```yaml
+group: beyondpack-windows-release-${{ github.event_name }}-${{ github.ref }}
+cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+이제 PR을 여러 번 올려도 배포 빌드는 끝까지 돕니다.
+
 ## 설치 방법
 
 1. 작업관리자에서 실행 중인 `BeyondPack.exe`를 모두 종료합니다.
