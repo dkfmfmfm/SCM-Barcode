@@ -152,6 +152,14 @@ def stylesheet() -> str:
         selection-background-color:#D2E8E6; selection-color:#163D42;
     }
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QDateEdit:focus { border:1px solid #16756E; background:#FBFEFD; }
+    /* 숫자칸은 화면 오른쪽의 큰 ▲/▼ 단추를 따로 쓴다. Qt 기본 단추는 보이지
+       않게 지우되 setButtonSymbols(NoButtons)로 끄지는 않는다. 스타일시트를
+       입힌 스핀박스를 NoButtons로 만들면 Qt가 글자 넣을 칸을 1px로 줄여
+       입력한 숫자가 화면에 아예 보이지 않는다. */
+    QSpinBox::up-button, QSpinBox::down-button,
+    QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+        width:0px; height:0px; border:none; background:transparent;
+    }
     QLineEdit#scanInput { font-size:20px; font-weight:600; background:#F6FAFA; border:1px solid #8DB8B3; }
     QLineEdit#shipmentInput { font-weight:600; }
     QLineEdit#readonlyField { background:#F4F7F9; border-color:#E7EDF0; color:#334F5B; font-size:13px; }

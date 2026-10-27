@@ -6,6 +6,7 @@
   "cache_max_age_hours": 72,
   "large_drop_threshold": 0.2,
   "scanner_terminator": "enter",
+  "default_country_code": "US",
   "weight_max_kg": 1000.0,
   "dimension_max_cm": 500.0,
   "google_sheets": {

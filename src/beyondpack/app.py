@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        from PySide6.QtCore import QLockFile, QTimer
+        from PySide6.QtCore import QCoreApplication, QEvent, QLockFile, QTimer
         from PySide6.QtWidgets import QApplication, QMessageBox
         from .ui import MainWindow
     except ImportError as exc:
@@ -163,6 +163,13 @@ def main(argv: list[str] | None = None) -> int:
             _self_test_note("라벨 통과")
             _self_test_backup(root, cache, packaging, sample_path)
             _self_test_note("백업 통과")
+            # 검사 창을 확실히 거둔 뒤에 끝낸다. 남겨 두면 파이썬이 종료하며
+            # Qt 객체를 임의 순서로 풀어 간헐적으로 죽는다. 검사는 이미
+            # 끝났지만 종료 코드가 0이 아니면 배포가 막힌다.
+            window.deleteLater()
+            window = None
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            app.processEvents()
         _self_test_note("END")
         return 0
 

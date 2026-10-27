@@ -304,3 +304,40 @@ class PackagingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenJobLookupTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = PackagingRepository(Path(self.temp.name) / "packaging.db")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _group(self, box_count: int = 2) -> BoxGroupInput:
+        items = (BoxItem("X1", "A1", "SKU1", "US", "미국", "상품1", 2),)
+        return BoxGroupInput(
+            box_count, Decimal("8.4"), Decimal("42"), Decimal("31"), Decimal("24"), items
+        )
+
+    def test_an_open_job_is_found_for_its_shipment(self):
+        job = self.repo.create_job("반장", "V1", "2.3.2", "항공-1")
+        self.repo.save_box_group(job, self._group(), "반장")
+        self.assertEqual(self.repo.open_job_for_shipment("항공-1"), job)
+        # 표기가 달라도 같은 출고건으로 본다.
+        self.assertEqual(self.repo.open_job_for_shipment(" 항공-1 "), job)
+        self.assertEqual(self.repo.open_job_for_shipment("해상-1"), "")
+        self.assertEqual(self.repo.open_job_for_shipment(""), "")
+
+    def test_a_completed_job_is_not_offered_to_continue(self):
+        job = self.repo.create_job("반장", "V1", "2.3.2", "항공-1")
+        self.repo.save_box_group(job, self._group(), "반장")
+        self.repo.close_job(job, "반장")
+        self.assertEqual(self.repo.open_job_for_shipment("항공-1"), "")
+
+    def test_the_most_recently_touched_open_job_wins(self):
+        first = self.repo.create_job("반장", "V1", "2.3.2", "항공-1")
+        self.repo.save_box_group(first, self._group(), "반장")
+        second = self.repo.create_job("반장", "V1", "2.3.2", "항공-1")
+        self.repo.save_box_group(second, self._group(), "반장")
+        self.assertEqual(self.repo.open_job_for_shipment("항공-1"), second)

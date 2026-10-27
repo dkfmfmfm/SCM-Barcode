@@ -78,6 +78,9 @@ class AppConfig:
     cache_max_age_hours: int = 72
     large_drop_threshold: float = 0.20
     scanner_terminator: str = "enter"
+    # 작업 국가 기본 선택. 현장 대부분이 한 국가로만 작업하므로 매번 고르지
+    # 않도록 한다. 상품DB에 그 국가가 없으면 무시하고 "국가 선택"으로 둔다.
+    default_country_code: str = "US"
     weight_max_kg: float = 1000.0
     dimension_max_cm: float = 500.0
     google_sheets: GoogleSheetsSettings = field(default_factory=GoogleSheetsSettings)
