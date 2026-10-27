@@ -41,8 +41,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: beyondpack-windows-release
-  cancel-in-progress: true
+  # 검증 빌드와 배포 빌드를 한 그룹에 두면, PR을 하나 올리는 것만으로
+  # 진행 중인 main 배포가 취소되어 릴리즈가 조용히 사라진다. 실제로 v2.3.2가
+  # 그렇게 유실됐다. 이벤트와 ref로 그룹을 나누고, 취소는 PR 빌드에서만 한다.
+  group: beyondpack-windows-release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-release:
