@@ -135,7 +135,7 @@ class BackupSettingsDialog(QDialog):
     def __init__(self, settings: BackupSettings, station: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("자동 백업 설정")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(640)
 
         self.enabled = QCheckBox("포장 실적과 상품 마스터를 지정한 위치에 자동으로 복사한다")
         self.enabled.setChecked(settings.enabled)
@@ -211,7 +211,7 @@ class LabelSettingsDialog(QDialog):
     def __init__(self, settings: LabelSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("라벨 설정")
-        self.setMinimumWidth(430)
+        self.setMinimumWidth(500)
 
         self.printer_combo = QComboBox()
         self.printer_combo.setMinimumHeight(36)
@@ -358,7 +358,16 @@ class MainWindow(QMainWindow):
         self.edit_group_id = ""
         self.edit_reason = ""
         self.edit_box_count = 0
+        # 지금 담고 있는 구성품을 어느 출고건에서 시작했는지. 항공·해상을
+        # 오가다 구성품이 엉뚱한 출고건으로 저장되는 것을 막는 데 쓴다.
+        self.items_shipment = ""
+        # 숫자칸에 막 들어와 아직 첫 글자를 치지 않은 상태.
+        self._spin_fresh_focus = None
+        self._spin_focus_click = False
         self._restoring_input = False
+        # 창을 세우는 동안 일어나는 변화는 작업자 입력이 아니다. 이때
+        # 임시저장을 쓰면 복구할 내용을 시작하자마자 지워 버린다.
+        self._starting_up = True
         self.last_saved: tuple[dict, list[dict]] | None = None
         self.sync_thread: QThread | None = None
         self.backup_thread: QThread | None = None
@@ -376,6 +385,7 @@ class MainWindow(QMainWindow):
         self._refresh_country_options()
         self._restore_active_job()
         self._restore_draft()
+        self._starting_up = False
         self._refresh_next_box_label()
         self._refresh_shipment_view()
         # 번호가 밀린 박스를 아직 다시 붙이지 않았다면 재시작해도 안내가 남는다.
@@ -757,6 +767,9 @@ class MainWindow(QMainWindow):
         for widget in (self.country_combo, self.qty_input, self.box_count,
                 self.weight, self.length, self.width, self.height):
             widget.installEventFilter(self)
+            if isinstance(widget, QAbstractSpinBox):
+                # 마우스 누름은 스핀박스가 아니라 안쪽 줄편집기가 받는다.
+                widget.lineEdit().installEventFilter(self)
         QWidget.setTabOrder(self.country_combo, self.operator_input)
         QWidget.setTabOrder(self.operator_input, self.shipment_input)
         QWidget.setTabOrder(self.shipment_input, self.fnsku_input)
@@ -781,7 +794,9 @@ class MainWindow(QMainWindow):
     def _stepper(
         self, box: QAbstractSpinBox, key: str, field_name: str
     ) -> QWidget:
-        box.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        # NoButtons로 끄지 않는다. 스타일시트가 입혀진 스핀박스를 NoButtons로
+        # 만들면 글자 칸이 1px로 접혀 입력한 숫자가 보이지 않는다. 기본 단추는
+        # 스타일시트에서 폭 0으로 지운다.
         box.setAlignment(Qt.AlignRight)
         box.setMinimumHeight(40)
         box.setMinimumWidth(130)
@@ -839,18 +854,51 @@ class MainWindow(QMainWindow):
             action.triggered.connect(callback)
             self.addAction(action)
 
+    @staticmethod
+    def _owning_spin(watched) -> QAbstractSpinBox | None:
+        """숫자칸 본체를 찾는다. 포커스는 스핀박스가, 키·마우스는 줄편집기가 받는다."""
+        if isinstance(watched, QAbstractSpinBox):
+            return watched
+        if isinstance(watched, QLineEdit) and isinstance(watched.parent(), QAbstractSpinBox):
+            return watched.parent()
+        return None
+
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Wheel and not watched.hasFocus():
             event.ignore()
             return True
+        spin = self._owning_spin(watched)
         if event.type() == QEvent.FocusIn and isinstance(watched, QAbstractSpinBox):
             # 마우스로 누르면 Qt가 누른 자리에 커서를 놓는다. 빈칸이나 0이 남은
-            # 칸이면 친 숫자가 기존 글자 **앞에** 끼어들어, 박스수량에 10을 치면
-            # 01(=1개)이 되고 무게 0.000에 10을 치면 100.000이 됐다.
-            # 커서 배치가 이 이벤트 뒤에 일어나므로 한 박자 늦춰 전체를 선택한다.
-            # 이미 포커스가 있는 칸을 다시 누르면 FocusIn이 오지 않으므로,
-            # 자릿수 하나만 고치는 조작은 그대로 된다.
+            # 칸이면 친 숫자가 기존 글자 **앞에** 끼어들어, 박스수량에 12를 치면
+            # 21이 되고 무게 0.000에 12를 치면 120.000이 됐다.
+            #
+            # 커서 배치가 이 이벤트 뒤에 일어나므로 선택도 한 박자 늦춘다.
+            # 다만 그 사이에 글자가 먼저 들어오면(빠른 타자, 인쇄·백업으로
+            # 이벤트 처리가 밀린 순간) 선택이 늦어 또 뒤집힌다. 그래서 늦춘
+            # 선택은 눈에 보이는 표시용으로만 두고, 실제 보장은 아래 첫
+            # 키 입력에서 한다.
+            self._spin_fresh_focus = watched
+            # 클릭으로 들어왔다면 포커스 **다음에** 그 누름 이벤트가 이어서 온다.
+            # 그 한 번은 커서를 옮기려는 조작이 아니라 칸에 들어오는 동작이므로
+            # 아래에서 넘긴다.
+            self._spin_focus_click = event.reason() == Qt.MouseFocusReason
             QTimer.singleShot(0, watched, watched.selectAll)
+        if (event.type() == QEvent.MouseButtonPress
+                and spin is not None and spin is not watched and spin.hasFocus()):
+            if self._spin_focus_click:
+                self._spin_focus_click = False      # 칸에 들어오게 만든 그 누름
+            else:
+                # 이미 커서가 있는 칸을 다시 누른 것이다. 자릿수 하나만 고치려는
+                # 조작이므로 덮어쓰기를 풀어 커서 위치를 존중한다.
+                self._spin_fresh_focus = None
+        if (event.type() == QEvent.KeyPress
+                and spin is not None and self._spin_fresh_focus is spin):
+            # 칸에 들어온 뒤 처음 누른 글자다. 이 시점에 선택하면 늦은 선택과
+            # 경합하지 않는다. 이미 선택돼 있으면 그대로 둔다.
+            self._spin_fresh_focus = None
+            if not spin.lineEdit().hasSelectedText():
+                spin.selectAll()
         if (hasattr(self, "qty_input") and watched is self.qty_input.lineEdit()
                 and event.type() == QEvent.KeyPress
                 and event.key() in (Qt.Key_Return, Qt.Key_Enter)
@@ -1225,6 +1273,10 @@ class MainWindow(QMainWindow):
         self.country_combo.blockSignals(False)
         if selected:
             self._select_country(selected)
+        elif self.config.default_country_code.strip():
+            # 현장 대부분이 한 국가로만 작업한다. 기본 국가가 상품DB에 있으면
+            # 미리 골라 둬서 매번 고르는 손을 던다. 없으면 그대로 둔다.
+            self._select_country(self.config.default_country_code)
 
     @Slot(int)
     def _country_changed(self, _index: int) -> None:
@@ -1429,6 +1481,8 @@ class MainWindow(QMainWindow):
             self._error("먼저 FNSKU를 스캔하세요. [BP-UX-001]")
             self.fnsku_input.setFocus()
             return
+        if not self.items:
+            self.items_shipment = self._shipment_code()
         qty = self.qty_input.value()
         existing = next(
             (
@@ -1550,9 +1604,34 @@ class MainWindow(QMainWindow):
             return
         if self.job_id and code != self.job_shipment:
             self.job_id = None
+            self.job_shipment = ""
+        if code and not self.job_id:
+            # 항공·해상을 오가며 작업한다. 돌아온 출고건에 열린 작업이 있으면
+            # 새로 만들지 말고 그대로 이어 쓴다. 그래야 이력이 쪼개지지 않고
+            # 작업자가 "새 작업 시작"을 따로 누를 일이 없다.
+            existing = self.packaging.open_job_for_shipment(code)
+            if existing:
+                self.job_id = existing
+                self.job_shipment = code
         self._refresh_next_box_label()
         self._refresh_shipment_view()
+        self._warn_if_items_from_another_shipment()
         self._save_draft()
+
+    def _warn_if_items_from_another_shipment(self) -> None:
+        """담던 구성품이 다른 출고건 것이면 눈에 띄게 알린다.
+
+        출고건 칸은 글자마다 반응하므로 되돌리면 타자를 칠 수 없다. 그래서
+        입력은 막지 않고, 확정할 때 한 번 더 묻는다(`confirm_box_group`).
+        """
+        code = self._shipment_code()
+        if not self.items or not self.items_shipment or self.items_shipment == code:
+            return
+        self._error(
+            f"담고 있는 구성품은 '{self.items_shipment}' 작업에서 시작했습니다. "
+            f"이대로 확정하면 '{code or '(빈 출고건)'}'에 저장됩니다.",
+            beep=False,
+        )
 
     @staticmethod
     def _local_time(value: object) -> str:
@@ -1967,6 +2046,22 @@ class MainWindow(QMainWindow):
                 height_cm=positive_decimal(self.height.value(), "높이", Decimal(str(self.config.dimension_max_cm))),
                 items=tuple(self.items),
             )
+            if (self.items_shipment and self.items_shipment != shipment_code
+                    and not self.edit_group_id):
+                # 담는 도중에 출고건이 바뀌었다. 조용히 다른 출고건에 넣으면
+                # 항공 물건이 해상 실적에 섞인다. 한 번만 확인받는다.
+                if QMessageBox.question(
+                    self,
+                    "출고건 확인",
+                    f"이 박스는 <b>{html.escape(self.items_shipment)}</b> 작업에서 담기 시작했는데,\n"
+                    f"지금 출고건은 <b>{html.escape(shipment_code)}</b>입니다.\n\n"
+                    f"<b>{html.escape(shipment_code)}</b>에 저장할까요?",
+                ) != QMessageBox.Yes:
+                    self._error(
+                        f"저장하지 않았습니다. 출고건을 '{self.items_shipment}'로 "
+                        "되돌리거나 F4로 구성품을 비우세요."
+                    )
+                    return
             if self.edit_group_id and value.box_count != self.edit_box_count:
                 preview = self.packaging.renumber_preview(
                     self.edit_group_id, value.box_count
@@ -1994,6 +2089,7 @@ class MainWindow(QMainWindow):
         self.edit_group_id = ""
         self.edit_reason = ""
         self.edit_box_count = 0
+        self.items_shipment = ""
         self._register_relabel(saved.renumbered)
         self.items.clear()
         self._refresh_items_table()
@@ -2041,6 +2137,7 @@ class MainWindow(QMainWindow):
         self.edit_group_id = ""
         self.edit_reason = ""
         self.edit_box_count = 0
+        self.items_shipment = ""
         self.items.clear()
         self._refresh_items_table()
         self._clear_scan(keep_message=True)
@@ -2210,7 +2307,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "진단파일 생성 완료", f"인증정보를 제외한 진단파일을 만들었습니다.\n{path}")
 
     def _save_draft(self) -> None:
-        if self._restoring_input:
+        if self._restoring_input or self._starting_up:
             return
         payload = {
             "job_id": self.job_id,
@@ -2225,6 +2322,7 @@ class MainWindow(QMainWindow):
             "height": self.height.value(),
             "selected_country_code": self._selected_country_code(),
             "shipment_code": self._shipment_code(),
+            "items_shipment": self.items_shipment,
         }
         # 출고건이나 국가만 들어 있는 상태는 복구할 작업이 아니다. 이것까지
         # 저장하면 박스를 확정하고 정상 종료해도 다음 실행에서 복구 창이 뜬다.
@@ -2257,6 +2355,7 @@ class MainWindow(QMainWindow):
             self.operator_input.setText(str(draft.get("operator_name") or self.config.operator_name))
             self.edit_group_id = str(draft.get("edit_group_id") or "")
             self.edit_reason = str(draft.get("edit_reason") or "")
+            self.items_shipment = str(draft.get("items_shipment") or "")
             self._select_country(str(draft.get("selected_country_code", "")))
             self.items = [BoxItem(**item) for item in draft.get("items", [])]
             if self.items:

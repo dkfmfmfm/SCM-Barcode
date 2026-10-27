@@ -125,7 +125,7 @@ def readable_table(table, word_columns=()):
     table.setShowGrid(False)
     table.setAlternatingRowColors(True)
     table.verticalHeader().setVisible(False)
-    table.verticalHeader().setDefaultSectionSize(38)
+    table.verticalHeader().setDefaultSectionSize(44)
     for column in word_columns:
         table.setItemDelegateForColumn(column, WordDelegate(table))
     timer = QTimer(table)
@@ -139,47 +139,55 @@ def readable_table(table, word_columns=()):
 def stylesheet() -> str:
     return """
     QMainWindow, QDialog { background:#F3F5F7; }
-    QWidget { color:#20303D; font-family:'Malgun Gothic','Noto Sans CJK KR','DejaVu Sans'; font-size:13px; }
+    QWidget { color:#20303D; font-family:'Malgun Gothic','Noto Sans CJK KR','DejaVu Sans'; font-size:15px; }
     QLabel { background:transparent; }
     QLabel#brandTitle { font-size:23px; font-weight:700; letter-spacing:1px; color:#183D45; }
-    QLabel#subtitle, QLabel#fieldCaption { color:#647581; font-size:12px; }
-    QLabel#sectionTitle { font-size:20px; font-weight:700; }
+    QLabel#subtitle, QLabel#fieldCaption { color:#4C5E6B; font-size:13px; }
+    QLabel#sectionTitle { font-size:21px; font-weight:700; }
     QFrame#contextCard { background:white; border:1px solid #DDE4E8; border-radius:12px; }
     QGroupBox { background:white; border:1px solid #DDE4E8; border-radius:12px; margin-top:12px; padding:12px; font-weight:700; }
     QGroupBox::title { subcontrol-origin:margin; left:14px; padding:0 6px; color:#36545B; }
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit {
-        background:white; border:1px solid #C9D4DB; border-radius:7px; padding:7px 9px; font-size:14px;
+        background:white; border:1px solid #C9D4DB; border-radius:7px; padding:7px 9px; font-size:17px;
         selection-background-color:#D2E8E6; selection-color:#163D42;
     }
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QDateEdit:focus { border:1px solid #16756E; background:#FBFEFD; }
-    QLineEdit#scanInput { font-size:20px; font-weight:600; background:#F6FAFA; border:1px solid #8DB8B3; }
+    /* 숫자칸은 화면 오른쪽의 큰 ▲/▼ 단추를 따로 쓴다. Qt 기본 단추는 보이지
+       않게 지우되 setButtonSymbols(NoButtons)로 끄지는 않는다. 스타일시트를
+       입힌 스핀박스를 NoButtons로 만들면 Qt가 글자 넣을 칸을 1px로 줄여
+       입력한 숫자가 화면에 아예 보이지 않는다. */
+    QSpinBox::up-button, QSpinBox::down-button,
+    QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+        width:0px; height:0px; border:none; background:transparent;
+    }
+    QLineEdit#scanInput { font-size:22px; font-weight:600; background:#F6FAFA; border:1px solid #8DB8B3; }
     QLineEdit#shipmentInput { font-weight:600; }
-    QLineEdit#readonlyField { background:#F4F7F9; border-color:#E7EDF0; color:#334F5B; font-size:13px; }
-    QLabel#productName { background:#F4F7F9; border:1px solid #E7EDF0; border-radius:8px; padding:8px 12px; font-size:17px; font-weight:600; }
+    QLineEdit#readonlyField { background:#F4F7F9; border-color:#E7EDF0; color:#2B4552; font-size:15px; }
+    QLabel#productName { background:#F4F7F9; border:1px solid #E7EDF0; border-radius:8px; padding:8px 12px; font-size:20px; font-weight:600; }
     QWidget#numericStepper { background:transparent; }
     QPushButton { background:white; border:1px solid #CCD7DC; border-radius:7px; padding:8px 12px; font-weight:600; }
     QPushButton:hover { background:#EDF5F4; border-color:#8BAFA9; }
     QPushButton:pressed { background:#DDECE9; }
     QPushButton:focus { border:2px solid #16756E; }
     QPushButton#primaryButton { background:#EAF3F1; border-color:#AFCAC3; color:#1F5E55; }
-    QPushButton#confirmButton { background:#175E55; border:1px solid #175E55; color:white; font-size:16px; }
+    QPushButton#confirmButton { background:#175E55; border:1px solid #175E55; color:white; font-size:19px; }
     QPushButton#confirmButton:hover { background:#124B44; }
     QPushButton#dangerButton { color:#A03939; border-color:#DEC9C9; }
-    QPushButton:disabled { background:#EEF1F3; color:#9AA7AE; border-color:#E0E6E9; }
-    QPushButton[stepperButton="true"] { background:#F5F8F9; border:1px solid #CCD7DC; border-radius:4px; padding:0; font-size:10px; }
+    QPushButton:disabled { background:#EEF1F3; color:#7E8C94; border-color:#E0E6E9; }
+    QPushButton[stepperButton="true"] { background:#F5F8F9; border:1px solid #CCD7DC; border-radius:4px; padding:0; font-size:13px; }
     QPushButton[stepperButton="true"]:hover { background:#DCEDE9; border-color:#71A598; }
     QTableWidget, QListWidget, QTextBrowser { background:white; border:1px solid #E0E7EB; border-radius:8px; alternate-background-color:#F7F9FA; selection-background-color:#DFEEEB; selection-color:#153F38; }
     QTableWidget::item { padding:6px 8px; border-bottom:1px solid #EEF2F4; }
-    QHeaderView::section { background:#EDF2F4; color:#4E626E; padding:9px 7px; border:0; font-size:12px; font-weight:600; }
+    QHeaderView::section { background:#EDF2F4; color:#3C4F5B; padding:9px 7px; border:0; font-size:14px; font-weight:600; }
     QTabWidget::pane { background:white; border:1px solid #DDE4E8; border-radius:9px; }
-    QTabBar::tab { background:#E8EEF0; color:#667A84; border:0; border-radius:6px; padding:9px 16px; margin:0 5px 5px 0; font-weight:600; }
+    QTabBar::tab { background:#E8EEF0; color:#4F636D; border:0; border-radius:6px; padding:9px 16px; margin:0 5px 5px 0; font-weight:600; }
     QTabBar::tab:selected { background:#D9EAE5; color:#174E44; }
     QLabel#progressSummary, QLabel#packingSummary { background:#F0F6F4; color:#285D50; border:1px solid #DBE9E2; border-radius:8px; padding:8px 12px; }
     QLabel#nextAction { background:#EEF4F8; color:#36566A; border:1px solid #D8E4EC; border-radius:9px; padding:8px 12px; }
     QListWidget::item { padding:11px 10px; border-bottom:1px solid #EEF2F4; }
     QListWidget::item:selected { background:#DFEEEB; color:#153F38; }
-    QLabel#backupState { font-size:12px; }
-    QStatusBar { color:#73858E; background:#EBF0F2; font-size:12px; }
+    QLabel#backupState { font-size:13px; }
+    QStatusBar { color:#4E6069; background:#EBF0F2; font-size:13px; }
     QMenu { background:white; border:1px solid #D4DFE4; padding:6px; }
     QMenu::item { padding:9px 22px; border-radius:5px; }
     QMenu::item:selected { background:#E6F0EC; color:#175E55; }

@@ -13,6 +13,8 @@ if QApplication is not None:
     from beyondpack.help import HelpDialog
     from beyondpack.history import JobHistoryDialog
     from beyondpack.presentation import word_lines
+    from beyondpack.models import BoxItem
+    from beyondpack.ui import MainWindow
 
 
 class ExperienceUITests(RecoveryUIHarness):
@@ -125,3 +127,140 @@ class ExperienceUITests(RecoveryUIHarness):
         self.assertFalse(dialog.resume.isEnabled())
         self.assertFalse(dialog.export.isEnabled())
         self.assertIn("시작일", dialog.result_count.text())
+
+
+class NumericEntryUITests(RecoveryUIHarness):
+    """숫자칸을 마우스로 누르고 치면 자리가 뒤집히던 문제."""
+
+    def show_window(self, width=1280, height=860):
+        self.window.resize(width, height)
+        self.window.show()
+        for _ in range(8):
+            self.app.processEvents()
+
+    def click_then_type(self, spin, preset, keys, settle: bool):
+        spin.setValue(preset)
+        self.window.fnsku_input.setFocus()
+        self.app.processEvents()
+        line = spin.lineEdit()
+        QTest.mouseClick(line, Qt.LeftButton, Qt.NoModifier, QPoint(2, line.height() // 2))
+        if settle:
+            self.app.processEvents()
+        for key in keys:
+            QTest.keyClicks(line, key)
+        self.app.processEvents()
+        return spin.value()
+
+    def test_digits_keep_their_order_even_when_typed_immediately(self):
+        # 클릭 직후 곧바로 치면 늦은 전체선택과 경합해 12가 21이 됐다.
+        self.show_window()
+        for settle in (True, False):
+            self.assertEqual(self.click_then_type(self.window.box_count, 0, "12", settle), 12)
+            self.assertEqual(self.click_then_type(self.window.box_count, 0, "105", settle), 105)
+            self.assertEqual(self.click_then_type(self.window.box_count, 3, "12", settle), 12)
+            self.assertEqual(self.click_then_type(self.window.weight, 0, "12.5", settle), 12.5)
+            self.assertEqual(self.click_then_type(self.window.weight, 9.5, "11", settle), 11.0)
+            self.assertEqual(self.click_then_type(self.window.qty_input, 0, "15", settle), 15)
+
+    def test_a_second_click_still_places_the_cursor_for_one_digit_edits(self):
+        self.show_window()
+        spin = self.window.box_count
+        spin.setValue(12)
+        self.window.fnsku_input.setFocus()
+        self.app.processEvents()
+        line = spin.lineEdit()
+        QTest.mouseClick(line, Qt.LeftButton, Qt.NoModifier, QPoint(2, line.height() // 2))
+        self.app.processEvents()
+        line.deselect()
+        line.setCursorPosition(2)
+        QTest.mouseClick(line, Qt.LeftButton, Qt.NoModifier, QPoint(20, line.height() // 2))
+        line.setCursorPosition(2)
+        QTest.keyClicks(line, "3")
+        self.app.processEvents()
+        self.assertEqual(spin.value(), 123)
+
+    def test_the_configured_country_is_selected_without_touching_the_draft(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        self.assertEqual(self.window._selected_country_code(), "US")
+        # 시작하면서 고른 기본 국가가 복구용 임시저장을 지우면 안 된다.
+        self.fill()
+        self.assertIsNotNone(self.repo.load_draft(self.window.DRAFT_KEY))
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            reopened = self.open_window()
+        self.assertEqual(reopened._selected_country_code(), "US")
+        self.assertEqual(reopened.box_count.value(), 2, "복구할 입력이 살아 있어야 한다")
+
+    def test_an_unknown_default_country_leaves_the_prompt_in_place(self):
+        config = replace(self.config, default_country_code="ZZ")
+        window = MainWindow(config, self.root / "config.json", self.cache, self.repo,
+            lambda _: None, auto_sync=False)
+        self.windows.append(window)
+        self.assertEqual(window._selected_country_code(), "")
+
+
+class ShipmentSwitchingUITests(RecoveryUIHarness):
+    """항공·해상처럼 출고건을 오가며 작업하는 흐름."""
+
+    def pack(self, shipment, boxes=2, answer=None):
+        window = self.window
+        window.shipment_input.setText(shipment)
+        self.app.processEvents()
+        window._select_country("US")
+        window.items = [BoxItem.from_product(self.products[0], 2)]
+        window.items_shipment = window._shipment_code()
+        window._refresh_items_table()
+        window.box_count.setValue(boxes)
+        for widget in (window.weight, window.length, window.width, window.height):
+            widget.setValue(3)
+        if answer is None:
+            window.confirm_box_group()
+        else:
+            with patch("beyondpack.ui.QMessageBox.question", lambda *a, **k: answer):
+                window.confirm_box_group()
+        self.app.processEvents()
+
+    def test_returning_to_a_shipment_continues_its_open_job(self):
+        self.pack("항공-1")
+        self.pack("해상-1")
+        self.pack("항공-1")
+        air = [j for j in self.repo.search_jobs() if j["shipment_code"] == "항공-1"]
+        self.assertEqual(len(air), 1, "출고건을 오갈 때마다 작업이 새로 생기면 안 된다")
+        self.assertEqual(air[0]["box_count"], 4)
+        self.assertEqual(
+            [(g["box_start_no"], g["box_count"]) for g in self.repo.shipment_groups("항공-1")],
+            [(1, 2), (3, 2)],
+        )
+        self.assertEqual(self.repo.next_box_number("해상-1"), 3)
+
+    def test_items_are_not_moved_to_another_shipment_without_asking(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        self.window.shipment_input.setText("항공-1")
+        self.app.processEvents()
+        self.window._select_country("US")
+        self.window.fnsku_input.setText("X1")
+        self.window.lookup_product()
+        self.window.qty_input.setValue(2)
+        self.window.add_current_item()
+        self.assertEqual(self.window.items_shipment, "항공-1")
+
+        self.window.shipment_input.setText("해상-9")
+        self.app.processEvents()
+        self.assertIn("항공-1", self.window.next_action.text())
+
+        self.window.box_count.setValue(1)
+        for widget in (self.window.weight, self.window.length,
+                self.window.width, self.window.height):
+            widget.setValue(3)
+        with patch("beyondpack.ui.QMessageBox.question", lambda *a, **k: QMessageBox.No):
+            self.window.confirm_box_group()
+        self.assertEqual(self.repo.shipment_groups("해상-9"), [])
+        self.assertEqual(len(self.window.items), 1, "거절했으면 구성품은 그대로 남는다")
+
+        self.window.shipment_input.setText("항공-1")
+        self.app.processEvents()
+        with patch("beyondpack.ui.QMessageBox.question", lambda *a, **k: QMessageBox.Yes):
+            self.window.confirm_box_group()
+        self.assertEqual(len(self.repo.shipment_groups("항공-1")), 1)
+        self.assertEqual(self.repo.shipment_groups("해상-9"), [])

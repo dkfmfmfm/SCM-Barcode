@@ -164,6 +164,28 @@ class PackagingRepository:
                 updated_at=excluded.updated_at""", (json.dumps({"job_id": job_id}), utc_now_iso()))
         return dict(row)
 
+    def open_job_for_shipment(self, shipment_code: str) -> str:
+        """이 출고건에 이미 열려 있는 작업 id. 없으면 빈 문자열.
+
+        항공·해상처럼 출고건을 오가며 작업할 때, 돌아올 때마다 새 작업을
+        만들면 같은 출고건이 이력에 여러 줄로 쪼개진다. 열린 작업이 있으면
+        그대로 이어 쓴다.
+        """
+        code = normalize_shipment_code(shipment_code)
+        if not code:
+            return ""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id FROM packaging_jobs
+                WHERE shipment_code = ? AND status = 'OPEN'
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (code,),
+            ).fetchone()
+        return str(row["job_id"]) if row else ""
+
     def revision_history(self, job_id: str = "") -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute("""SELECT r.*, j.shipment_code FROM box_revisions r
