@@ -135,7 +135,7 @@ class BackupSettingsDialog(QDialog):
     def __init__(self, settings: BackupSettings, station: str, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("자동 백업 설정")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(640)
 
         self.enabled = QCheckBox("포장 실적과 상품 마스터를 지정한 위치에 자동으로 복사한다")
         self.enabled.setChecked(settings.enabled)
@@ -211,7 +211,7 @@ class LabelSettingsDialog(QDialog):
     def __init__(self, settings: LabelSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("라벨 설정")
-        self.setMinimumWidth(430)
+        self.setMinimumWidth(500)
 
         self.printer_combo = QComboBox()
         self.printer_combo.setMinimumHeight(36)
